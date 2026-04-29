@@ -19,24 +19,21 @@ Reference
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-from tqdm.auto import tqdm
 
 from ..preprocess.temporal import TemporalPreprocessor
 from ..registry import register_adapter
 from .base import DatasetBundle, DatasetSpec, Z3Adapter
 from .persistence import (
     get_prepared_cache_dir,
-    get_raw_cache_dir,
     load_prepared_bundle,
-    load_raw_data,
     save_prepared_bundle,
-    save_raw_data,
 )
-from .split_utils import apply_split, try_load_from_local
+from .split_utils import apply_split, extract_predefined_splits, try_load_from_local
 
 log = logging.getLogger(__name__)
 
@@ -107,18 +104,12 @@ class TelecomAdapter(Z3Adapter):
         return self._spec.num_classes
 
     def load_splits(self) -> DatasetBundle:
-        """Load TelecomTS and return pre-split arrays (with two-tier caching).
+        """Load TelecomTS and return pre-split arrays.
 
-        Cache resolution order:
-        1. **Prepared bundle** (seed-specific) — instant if found.
-        2. **Raw data cache** (seed-independent) — skip HF download,
-           only re-split and preprocess.
-        3. **HuggingFace download** — first run only; saves to both
-           raw cache and prepared bundle cache.
-
-        Returns
-        -------
-        DatasetBundle
+        Correctness rule:
+        - Prefer official dataset splits when they exist.
+        - Only fall back to a local stratified split when the source
+          dataset is provided as one unsplit table.
         """
         data_root = Path(self._data_root or "data/datasets").resolve()
 
@@ -131,30 +122,27 @@ class TelecomAdapter(Z3Adapter):
         if bundle is not None:
             return bundle
 
-        # 2. Check raw data cache (skip HF download)
-        raw_path = get_raw_cache_dir(data_root, "telecom", self._spec)
-        raw_data = load_raw_data(raw_path, self._spec)
-
-        if raw_data is not None:
-            log.info("Raw data cache hit — skipping HuggingFace download.")
-            raw_sequences, raw_labels = raw_data
-        else:
-            # 3. Download / extract from HuggingFace (first run only)
-            log.info("No raw cache found for TelecomTS. Downloading...")
-            raw_sequences, raw_labels = self._load_data()
-            # Save raw data for future seeds
-            save_raw_data(raw_path, raw_sequences, raw_labels, self._spec)
-
-        # 4. Apply seed-dependent split
-        sequences, labels = apply_split(
-            raw_sequences,
-            raw_labels,
+        ds = self._load_data()
+        split_result = extract_predefined_splits(
+            ds,
+            extract_array=self._extract_sequence,
+            extract_label=self._extract_label,
+            max_samples=self._max_samples,
             train_ratio=self._train_ratio,
             val_ratio=self._val_ratio,
-            seed=self._seed,
         )
+        if split_result is not None:
+            sequences, labels = split_result
+        else:
+            raw_sequences, raw_labels = self._extract_from_dataset(ds)
+            sequences, labels = apply_split(
+                raw_sequences,
+                raw_labels,
+                train_ratio=self._train_ratio,
+                val_ratio=self._val_ratio,
+                seed=self._seed,
+            )
 
-        # 5. Preprocess
         preprocessor = TemporalPreprocessor(target_length=self._target_length)
         bundle = DatasetBundle(
             train_sequences=sequences["train"],
@@ -163,46 +151,29 @@ class TelecomAdapter(Z3Adapter):
             val_labels=labels["val"],
             test_sequences=sequences["test"],
             test_labels=labels["test"],
-            spec=self._spec,
+            spec=self._resolved_spec_from_sequences(sequences["train"]),
         )
         bundle = preprocessor(bundle)
 
-        # 6. Save prepared bundle for this seed
         save_prepared_bundle(prepared_path, bundle)
 
         return bundle
 
     # ------------------------------------------------------------------ #
 
-    def _load_data(self) -> tuple[np.ndarray, np.ndarray]:
-        """Load sequences + labels, preferring local data over HuggingFace.
-
-        Returns
-        -------
-        sequences : np.ndarray
-            Shape ``(N_total, T_raw, d)``.
-        labels : np.ndarray
-            Shape ``(N_total,)``.
-        """
+    def _load_data(self):
+        """Load the raw TelecomTS dataset object."""
         # --- Try local disk first ---
         local_ds = try_load_from_local(self._data_root, "telecom")
         if local_ds is not None:
             log.info("TelecomAdapter: loading from local data_root=%s", self._data_root)
-            return self._extract_from_dataset(local_ds)
+            return local_ds
 
         # --- Fall back to HuggingFace ---
         return self._load_from_huggingface()
 
-    def _load_from_huggingface(self) -> tuple[np.ndarray, np.ndarray]:
-        """Download and extract sequences + labels from HuggingFace.
-
-        Returns
-        -------
-        sequences : np.ndarray
-            Shape ``(N_total, T_raw, d)``.
-        labels : np.ndarray
-            Shape ``(N_total,)``.
-        """
+    def _load_from_huggingface(self):
+        """Download the raw TelecomTS dataset object from HuggingFace."""
         try:
             from datasets import load_dataset
         except ImportError as exc:
@@ -212,9 +183,22 @@ class TelecomAdapter(Z3Adapter):
             ) from exc
 
         log.info("Loading TelecomTS from HuggingFace: %s", self._spec.hf_repo)
-        ds = load_dataset(self._spec.hf_repo, split="train").with_format("numpy")
 
-        return self._extract_from_dataset(ds)
+        # Suppress noisy loggers during download (httpx, datasets, huggingface_hub)
+        noisy_loggers = ["httpx", "datasets", "huggingface_hub"]
+        saved_levels = {}
+        for name in noisy_loggers:
+            logger = logging.getLogger(name)
+            saved_levels[name] = logger.level
+            logger.setLevel(logging.WARNING)
+
+        try:
+            ds = load_dataset(self._spec.hf_repo, tqdm_enabled=False)
+        finally:
+            for name, level in saved_levels.items():
+                logging.getLogger(name).setLevel(level)
+
+        return ds
 
     def _extract_from_dataset(self, ds) -> tuple[np.ndarray, np.ndarray]:
         """Extract sequences + labels from a HuggingFace Dataset object.
@@ -240,7 +224,7 @@ class TelecomAdapter(Z3Adapter):
         labels_list: list[int] = []
 
         total = min(len(ds), self._max_samples) if self._max_samples else len(ds)
-        for record in tqdm(ds, desc="Extracting TelecomTS", total=total):
+        for record in ds:
             if self._max_samples is not None and len(sequences_list) >= self._max_samples:
                 break
 
@@ -260,14 +244,6 @@ class TelecomAdapter(Z3Adapter):
         sequences = np.stack(sequences_list, axis=0).astype(np.float32)
         labels = np.asarray(labels_list, dtype=np.int64)
 
-        # Self-healing: update spec if dimension mismatch
-        if sequences.shape[-1] != self._spec.input_dim:
-            log.warning(
-                "Dimension mismatch: spec.input_dim=%d, actual=%d. Updating spec.",
-                self._spec.input_dim, sequences.shape[-1]
-            )
-            self._spec.input_dim = sequences.shape[-1]
-
         log.info(
             "TelecomAdapter: loaded %d samples, shape=%s, classes=%d",
             sequences.shape[0],
@@ -275,6 +251,17 @@ class TelecomAdapter(Z3Adapter):
             len(np.unique(labels)),
         )
         return sequences, labels
+
+    def _resolved_spec_from_sequences(self, sequences: np.ndarray) -> DatasetSpec:
+        actual_dim = int(sequences.shape[-1])
+        if actual_dim == self._spec.input_dim:
+            return self._spec
+        log.warning(
+            "TelecomAdapter: spec.input_dim=%d but extracted=%d; using extracted dimension.",
+            self._spec.input_dim,
+            actual_dim,
+        )
+        return replace(self._spec, input_dim=actual_dim)
 
     # ------------------------------------------------------------------ #
     # Column extraction helpers

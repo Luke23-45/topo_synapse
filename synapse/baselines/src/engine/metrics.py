@@ -131,6 +131,8 @@ def compare_conditions(
         t_stat, p_value = sp_stats.ttest_ind(scores_a, scores_b, equal_var=False)
         p_value = float(p_value)
         t_stat = float(t_stat)
+        if not np.isfinite(t_stat) or not np.isfinite(p_value):
+            t_stat, p_value = 0.0, 1.0
 
         # Wilcoxon signed-rank test (non-parametric backup)
         try:

@@ -122,6 +122,7 @@ class Z3DatasetSpec:
     batch_size_override: Optional[int] = None
     max_episodes: Optional[int] = None
     data_root: Optional[str] = None
+    num_seeds: Optional[int] = None  # Per-dataset seed count; None = use global stats.num_seeds
 
 
 # ---------------------------------------------------------------------------

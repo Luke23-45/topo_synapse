@@ -149,7 +149,7 @@ def _run_single(
         )
 
         train_state = train_backbone(
-            seed_config, train_loader, val_loader, cond_dir, device=device,
+            seed_config, train_loader, val_loader, cond_dir, bundle=bundle, device=device,
         )
 
         evaluation = evaluate_backbone(
@@ -197,6 +197,8 @@ def _run_dataset_experiment(
 ) -> Dict[str, dict]:
     """Run the full experiment for a single dataset × all backbones × all seeds.
 
+    Per-dataset num_seeds overrides global stats.num_seeds if specified.
+
     Returns dict mapping backbone_name -> {
         "evaluations": [BackboneEvaluation, ...],  # per seed
         "train_states": [TrainState, ...],          # per seed
@@ -205,7 +207,9 @@ def _run_dataset_experiment(
         "std_accuracy": float,
     }
     """
-    seeds = [config.seed + i for i in range(config.stats.num_seeds)]
+    # Use per-dataset num_seeds if specified, otherwise fall back to global stats
+    num_seeds = dataset_spec.num_seeds if dataset_spec.num_seeds is not None else config.stats.num_seeds
+    seeds = [config.seed + i for i in range(num_seeds)]
 
     results: Dict[str, dict] = {}
 
@@ -267,6 +271,27 @@ def _generate_cross_backbone_report(
             for k, v in ds_results.items()
             if v.get("evaluations")
         }
+        aggregate_stats = {
+            k: {
+                "std_accuracy": v["std_accuracy"],
+                "std_f1_macro": float(np.std([e.f1_macro for e in v["evaluations"]])),
+                "std_loss": float(np.std([e.mean_loss for e in v["evaluations"]])),
+                "per_seed_accuracy": [float(e.accuracy) for e in v["evaluations"]],
+                "per_seed_f1_macro": [float(e.f1_macro) for e in v["evaluations"]],
+                "per_seed_mean_loss": [float(e.mean_loss) for e in v["evaluations"]],
+            }
+            for k, v in ds_results.items()
+            if v.get("evaluations")
+        }
+        for k, v in ds_results.items():
+            if not v.get("evaluations"):
+                continue
+            evals = v["evaluations"]
+            representative = evaluations[k]
+            representative.accuracy = float(np.mean([e.accuracy for e in evals]))
+            representative.f1_macro = float(np.mean([e.f1_macro for e in evals]))
+            representative.mean_loss = float(np.mean([e.mean_loss for e in evals]))
+
         train_losses = {
             k: v["train_states"][0].train_losses
             for k, v in ds_results.items()
@@ -317,8 +342,18 @@ def _generate_cross_backbone_report(
                 comparisons.append(comp)
 
         # Reports
-        generate_json_report(evaluations, comparisons, report_dir / f"{ds_name}_results.json")
-        generate_markdown_report(evaluations, comparisons, report_dir / f"{ds_name}_summary.md")
+        generate_json_report(
+            evaluations,
+            comparisons,
+            report_dir / f"{ds_name}_results.json",
+            aggregate_stats=aggregate_stats,
+        )
+        generate_markdown_report(
+            evaluations,
+            comparisons,
+            report_dir / f"{ds_name}_summary.md",
+            aggregate_stats=aggregate_stats,
+        )
 
         # Plots — use mean ± std from multi-seed
         accuracies = {k: v["mean_accuracy"] for k, v in ds_results.items()}

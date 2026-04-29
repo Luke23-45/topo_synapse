@@ -18,6 +18,7 @@ Reference
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,7 @@ from ..preprocess.geometric import GeometricPreprocessor
 from ..registry import register_adapter
 from .base import DatasetBundle, DatasetSpec, Z3Adapter
 from .persistence import get_prepared_cache_dir, load_prepared_bundle, save_prepared_bundle
-from .split_utils import apply_split, try_load_from_local
+from .split_utils import apply_split, extract_predefined_splits, try_load_from_local
 
 log = logging.getLogger(__name__)
 
@@ -119,16 +120,26 @@ class SpatialAdapter(Z3Adapter):
 
         # 2. If no prepared cache, load raw data (local or HF)
         log.info("No prepared cache found for SpatialLM. Starting extraction...")
-        raw_clouds, raw_labels = self._load_data()
-
-        # 3. Apply splits
-        clouds, labels = apply_split(
-            raw_clouds,
-            raw_labels,
+        ds = self._load_data()
+        split_result = extract_predefined_splits(
+            ds,
+            extract_array=self._extract_cloud,
+            extract_label=self._extract_label,
+            max_samples=self._max_samples,
             train_ratio=self._train_ratio,
             val_ratio=self._val_ratio,
-            seed=self._seed,
         )
+        if split_result is not None:
+            clouds, labels = split_result
+        else:
+            raw_clouds, raw_labels = self._extract_from_dataset(ds)
+            clouds, labels = apply_split(
+                raw_clouds,
+                raw_labels,
+                train_ratio=self._train_ratio,
+                val_ratio=self._val_ratio,
+                seed=self._seed,
+            )
 
         # 4. Wrap and Preprocess
         preprocessor = GeometricPreprocessor(target_length=self._target_length)
@@ -139,7 +150,7 @@ class SpatialAdapter(Z3Adapter):
             val_labels=labels["val"],
             test_sequences=clouds["test"],
             test_labels=labels["test"],
-            spec=self._spec,
+            spec=self._resolved_spec_from_sequences(clouds["train"]),
         )
         bundle = preprocessor(bundle)
 
@@ -150,35 +161,19 @@ class SpatialAdapter(Z3Adapter):
 
     # ------------------------------------------------------------------ #
 
-    def _load_data(self) -> tuple[np.ndarray, np.ndarray]:
-        """Load point clouds + labels, preferring local data over HuggingFace.
-
-        Returns
-        -------
-        clouds : np.ndarray
-            Shape ``(N_total, N_pts, 3)``.
-        labels : np.ndarray
-            Shape ``(N_total,)``.
-        """
+    def _load_data(self):
+        """Load the raw SpatialLM dataset object."""
         # --- Try local disk first ---
         local_ds = try_load_from_local(self._data_root, "spatial")
         if local_ds is not None:
             log.info("SpatialAdapter: loading from local data_root=%s", self._data_root)
-            return self._extract_from_dataset(local_ds)
+            return local_ds
 
         # --- Fall back to HuggingFace ---
         return self._load_from_huggingface()
 
-    def _load_from_huggingface(self) -> tuple[np.ndarray, np.ndarray]:
-        """Download and extract point clouds + labels from HuggingFace.
-
-        Returns
-        -------
-        clouds : np.ndarray
-            Shape ``(N_total, N_pts, 3)``.
-        labels : np.ndarray
-            Shape ``(N_total,)``.
-        """
+    def _load_from_huggingface(self):
+        """Download the raw SpatialLM dataset object from HuggingFace."""
         try:
             from datasets import load_dataset
         except ImportError as exc:
@@ -188,9 +183,9 @@ class SpatialAdapter(Z3Adapter):
             ) from exc
 
         log.info("Loading SpatialLM from HuggingFace: %s", self._spec.hf_repo)
-        ds = load_dataset(self._spec.hf_repo, split="train", trust_remote_code=True)
+        ds = load_dataset(self._spec.hf_repo, trust_remote_code=True)
 
-        return self._extract_from_dataset(ds)
+        return ds
 
     def _extract_from_dataset(self, ds) -> tuple[np.ndarray, np.ndarray]:
         """Extract point clouds + labels from a HuggingFace Dataset object.
@@ -242,6 +237,12 @@ class SpatialAdapter(Z3Adapter):
             len(np.unique(labels)),
         )
         return clouds, labels
+
+    def _resolved_spec_from_sequences(self, sequences: np.ndarray) -> DatasetSpec:
+        actual_dim = int(sequences.shape[-1])
+        if actual_dim == self._spec.input_dim:
+            return self._spec
+        return replace(self._spec, input_dim=actual_dim)
 
     # ------------------------------------------------------------------ #
 

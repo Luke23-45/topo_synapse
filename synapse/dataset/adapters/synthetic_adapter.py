@@ -104,7 +104,11 @@ class SyntheticAdapter(Z3Adapter):
         cache_dir = get_prepared_cache_dir(
             cache_root, "synthetic", self._spec, self._seed,
             self._train_size / total if total > 0 else 0.8,
-            self._val_size / total if total > 0 else 0.1
+            self._val_size / total if total > 0 else 0.1,
+            extra_key=(
+                f"N{self._train_size}_{self._val_size}_{self._test_size}"
+                f"_noise{int(round(self._noise_std * 10000))}"
+            ),
         )
         
         bundle = load_prepared_bundle(cache_dir, self._spec)

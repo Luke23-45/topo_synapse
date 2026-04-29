@@ -23,6 +23,7 @@ def generate_json_report(
     evaluations: Dict[str, BackboneEvaluation],
     comparisons: List[ComparisonResult],
     output_path: Path,
+    aggregate_stats: Dict[str, dict] | None = None,
 ) -> Path:
     """Generate a JSON report with all metrics and statistical tests."""
     report = {
@@ -31,11 +32,18 @@ def generate_json_report(
     }
 
     for name, ev in evaluations.items():
+        agg = (aggregate_stats or {}).get(name, {})
         report["evaluations"][name] = {
             "backbone": ev.backbone,
             "accuracy": ev.accuracy,
+            "accuracy_std": agg.get("std_accuracy", 0.0),
             "f1_macro": ev.f1_macro,
+            "f1_macro_std": agg.get("std_f1_macro", 0.0),
             "mean_loss": ev.mean_loss,
+            "mean_loss_std": agg.get("std_loss", 0.0),
+            "per_seed_accuracy": agg.get("per_seed_accuracy", []),
+            "per_seed_f1_macro": agg.get("per_seed_f1_macro", []),
+            "per_seed_mean_loss": agg.get("per_seed_mean_loss", []),
             "per_class_accuracy": ev.per_class_accuracy.tolist(),
             "confusion_matrix": ev.confusion_matrix.tolist(),
         }
@@ -67,6 +75,7 @@ def generate_markdown_report(
     evaluations: Dict[str, BackboneEvaluation],
     comparisons: List[ComparisonResult],
     output_path: Path,
+    aggregate_stats: Dict[str, dict] | None = None,
 ) -> Path:
     """Generate a Markdown summary table."""
     lines = [
@@ -86,21 +95,24 @@ def generate_markdown_report(
     row = "| Accuracy |"
     for name in backbones:
         ev = evaluations[name]
-        row += f" {ev.accuracy:.4f} |"
+        agg = (aggregate_stats or {}).get(name, {})
+        row += f" {ev.accuracy:.4f} ± {agg.get('std_accuracy', 0.0):.4f} |"
     lines.append(row)
 
     # F1 row
     row = "| F1 Macro |"
     for name in backbones:
         ev = evaluations[name]
-        row += f" {ev.f1_macro:.4f} |"
+        agg = (aggregate_stats or {}).get(name, {})
+        row += f" {ev.f1_macro:.4f} ± {agg.get('std_f1_macro', 0.0):.4f} |"
     lines.append(row)
 
     # Loss row
     row = "| Mean Loss |"
     for name in backbones:
         ev = evaluations[name]
-        row += f" {ev.mean_loss:.4f} |"
+        agg = (aggregate_stats or {}).get(name, {})
+        row += f" {ev.mean_loss:.4f} ± {agg.get('std_loss', 0.0):.4f} |"
     lines.append(row)
 
     # Statistical comparisons

@@ -73,7 +73,7 @@ def resolve_normalization(bundle: DatasetBundle) -> dict[str, np.ndarray]:
     For bundles without preprocessor stats (e.g. synthetic), stats are
     computed from the raw training sequences as before.
     """
-    from synapse.synapse.data.normalization import compute_normalization_stats
+    from synapse.arch.data.normalization import compute_normalization_stats
 
     pre_mu = bundle.metadata.get("normalization_mean")
     pre_sigma = bundle.metadata.get("normalization_std")

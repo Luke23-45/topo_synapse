@@ -64,8 +64,10 @@ rollout:
   max_samples: 50
 
 # ═══════════════════════════════════════════════════════════
-# DATASETS: Each can override modality, input_dim, batch_size, etc.
+# DATASETS: Each can override modality, input_dim, batch_size, num_seeds, etc.
 # ═══════════════════════════════════════════════════════════
+# Per-dataset num_seeds: overrides global stats.num_seeds if specified.
+# Use lower seeds for quick datasets (synthetic), higher for real data.
 datasets:
   - name: synthetic
     modality: temporal
@@ -78,6 +80,7 @@ datasets:
     test_size: 128
     noise_std: 0.03
     batch_size_override: null
+    num_seeds: 1  # Quick synthetic test - single seed is sufficient
 
   # TelecomTS — 5G telemetry from HuggingFace (AliMaatouk/TelecomTS)
   # Actual dimensions: input_dim=16, num_classes=3, seq_len=256
@@ -92,6 +95,37 @@ datasets:
     test_size: 3200
     noise_std: 0.0
     batch_size_override: 64
+    num_seeds: 3  # Real data needs statistical rigor
+
+  # Photonic — 2D photonic crystal topology (cgeorgiaw/2d-photonic-topology)
+  # Actual dimensions: input_dim=8, num_classes=4, seq_len=64
+  - name: photonic
+    modality: scientific
+    source: huggingface
+    input_dim: 8
+    sequence_length: 64
+    num_classes: 4
+    train_size: 8000
+    val_size: 1000
+    test_size: 1000
+    noise_std: 0.0
+    batch_size_override: null
+    num_seeds: 3  # Scientific dataset - multiple seeds for reliability
+
+  # Spatial — 3D point clouds from SpatialLM (manycore-research/SpatialLM-Dataset)
+  # Actual dimensions: input_dim=3, num_classes=10, seq_len=512
+  - name: spatial
+    modality: geometric
+    source: huggingface
+    input_dim: 3
+    sequence_length: 512
+    num_classes: 10
+    train_size: 9862
+    val_size: 1233
+    test_size: 1233
+    noise_std: 0.0
+    batch_size_override: null
+    num_seeds: 3  # Large geometric dataset - full statistical analysis
 
 output_dir: outputs/baselines
 

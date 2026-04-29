@@ -1,14 +1,13 @@
 """Clean progress callback for Z3 Baseline training.
 
-No tqdm bars — only one ``print()`` line per epoch with key metrics.
-This avoids Colab/Jupyter DOM bloat caused by per-batch tqdm updates
-that create thousands of DOM nodes and slow the browser to a crawl.
+No tqdm bars, only one plain-ASCII line per epoch with key metrics.
+This keeps notebook and terminal output small and avoids Windows
+console encoding failures from box-drawing characters.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import pytorch_lightning as pl
 from tqdm.auto import tqdm
@@ -17,19 +16,11 @@ log = logging.getLogger(__name__)
 
 
 class EpochOnlyProgressBar(pl.callbacks.ProgressBar):
-    """Zero-spam progress callback.
-
-    - **No per-batch tqdm bars** — Lightning's default bars are disabled.
-    - **One ``print()`` per epoch** with train_loss, val_loss, val_accuracy.
-    - Validation sanity check is completely silent.
-    - Works well in Colab / Jupyter where tqdm spam kills the browser.
-    """
+    """Zero-spam progress callback."""
 
     def __init__(self) -> None:
         super().__init__()
         self._is_sanity: bool = False
-
-    # -- Disable ALL Lightning tqdm bars ----------------------------------
 
     def init_train_tqdm(self) -> tqdm:
         return tqdm(disable=True)
@@ -43,15 +34,11 @@ class EpochOnlyProgressBar(pl.callbacks.ProgressBar):
     def init_test_tqdm(self) -> tqdm:
         return tqdm(disable=True)
 
-    # -- Sanity check handling --------------------------------------------
-
     def on_sanity_check_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         self._is_sanity = True
 
     def on_sanity_check_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         self._is_sanity = False
-
-    # -- Epoch-end summary (the ONLY output) ------------------------------
 
     def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if self._is_sanity:
@@ -72,9 +59,7 @@ class EpochOnlyProgressBar(pl.callbacks.ProgressBar):
         if val_acc is not None:
             parts.append(f"val_acc={val_acc:.4f}")
 
-        print("  │ ".join(parts))
-
-    # -- Required property overrides (all return disabled tqdm) -----------
+        print(" | ".join(parts))
 
     @property
     def train_batch_bar(self) -> tqdm:

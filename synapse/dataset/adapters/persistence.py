@@ -34,6 +34,8 @@ def get_prepared_cache_dir(
     seed: int,
     train_ratio: float,
     val_ratio: float,
+    *,
+    extra_key: str | None = None,
 ) -> Path:
     """Generate a unique directory path for a prepared dataset split."""
     root = Path(data_root) / dataset_name / "prepared"
@@ -41,6 +43,9 @@ def get_prepared_cache_dir(
     params = f"T{spec.sequence_length}_D{spec.input_dim}_S{seed}_R{int(train_ratio*100)}_{int(val_ratio*100)}"
     if spec.max_samples is not None:
         params += f"_M{spec.max_samples}"
+    if extra_key:
+        safe_extra = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in extra_key)
+        params += f"_{safe_extra}"
     
     return root / params
 

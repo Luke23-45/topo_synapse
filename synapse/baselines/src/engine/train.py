@@ -29,10 +29,13 @@ from pathlib import Path
 import numpy as np
 import torch
 import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 from synapse.arch.losses.combined_loss import LossConfig
 from synapse.arch.training.utils.callbacks import EMACallback
+from synapse.arch.training.builders.builder import resolve_normalization
 from synapse.synapse_arch.unified import Z3UnifiedModel
+from synapse.dataset.adapters.base import DatasetBundle
 
 from .lightning_module import BaselineLightningModule
 from .progress import EpochOnlyProgressBar
@@ -66,6 +69,7 @@ def train_backbone(
     train_loader: torch.utils.data.DataLoader,
     val_loader: torch.utils.data.DataLoader,
     output_dir: Path,
+    bundle: DatasetBundle | None = None,
     device: str = "cpu",
 ) -> TrainState:
     """Train a single backbone condition using PyTorch Lightning.
@@ -93,6 +97,15 @@ def train_backbone(
         modality=modality,
         **model_kwargs,
     )
+
+    # Deep Hodge relies on normalized lifted features. The main training path
+    # applies these stats before optimization; the baseline runner must do the same.
+    if bundle is not None and getattr(model, "_has_topological_encoder", False):
+        norm = resolve_normalization(bundle)
+        model.set_normalization(
+            torch.as_tensor(norm["mu"], dtype=torch.float32),
+            torch.as_tensor(norm["sigma"], dtype=torch.float32),
+        )
 
     log.info(
         "Training backbone=%s, params=%d",
@@ -206,17 +219,27 @@ def train_backbone(
     # ------------------------------------------------------------------
     state = _extract_train_state(trainer, lightning_model, config.backbone.value, device)
 
-    # Load best checkpoint if available
+    # Restore the monitored best checkpoint for evaluation. Fall back to the
+    # final checkpoint only when Lightning did not record a best path.
     if config.training.save_checkpoints:
-        best_ckpt = output_dir / "checkpoints" / "last.ckpt"
-        if best_ckpt.exists():
-            ckpt = torch.load(best_ckpt, map_location=device, weights_only=False)
+        checkpoint_cb = next(
+            (cb for cb in trainer.callbacks if isinstance(cb, ModelCheckpoint)),
+            None,
+        )
+        ckpt_path = None
+        if checkpoint_cb is not None:
+            if checkpoint_cb.best_model_path:
+                ckpt_path = Path(checkpoint_cb.best_model_path)
+            elif checkpoint_cb.last_model_path:
+                ckpt_path = Path(checkpoint_cb.last_model_path)
+        if ckpt_path is not None and ckpt_path.exists():
+            ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
             model.load_state_dict(
                 {k.replace("model.", "", 1): v for k, v in ckpt["state_dict"].items()
                  if k.startswith("model.")},
                 strict=False,
             )
-            log.info("Loaded best checkpoint from %s", best_ckpt)
+            log.info("Loaded evaluation checkpoint from %s", ckpt_path)
 
     state.model = model
     return state

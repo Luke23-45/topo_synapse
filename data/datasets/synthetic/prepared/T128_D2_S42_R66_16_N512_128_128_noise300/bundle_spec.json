@@ -1,0 +1,19 @@
+{
+  "spec": {
+    "name": "synthetic",
+    "modality": "temporal",
+    "input_dim": 2,
+    "sequence_length": 128,
+    "num_classes": 4,
+    "task": "classification"
+  },
+  "metadata": {
+    "topology_names": [
+      "line",
+      "circle",
+      "figure_eight",
+      "branch"
+    ]
+  },
+  "metadata_array_keys": []
+}

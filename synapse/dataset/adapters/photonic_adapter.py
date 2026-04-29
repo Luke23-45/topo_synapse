@@ -29,7 +29,7 @@ from ..preprocess.scientific import ScientificPreprocessor
 from ..registry import register_adapter
 from .base import DatasetBundle, DatasetSpec, Z3Adapter
 from .persistence import get_prepared_cache_dir, load_prepared_bundle, save_prepared_bundle
-from .split_utils import apply_split, try_load_from_local
+from .split_utils import apply_split, extract_predefined_splits, try_load_from_local
 
 log = logging.getLogger(__name__)
 
@@ -124,16 +124,26 @@ class PhotonicAdapter(Z3Adapter):
 
         # 2. If no prepared cache, load raw data (local or HF)
         log.info("No prepared cache found for PhotonicTopology. Starting extraction...")
-        raw_grids, raw_labels = self._load_data()
-
-        # 3. Apply splits
-        grids, labels = apply_split(
-            raw_grids,
-            raw_labels,
+        ds = self._load_data()
+        split_result = extract_predefined_splits(
+            ds,
+            extract_array=self._extract_grid,
+            extract_label=self._extract_label,
+            max_samples=self._max_samples,
             train_ratio=self._train_ratio,
             val_ratio=self._val_ratio,
-            seed=self._seed,
         )
+        if split_result is not None:
+            grids, labels = split_result
+        else:
+            raw_grids, raw_labels = self._extract_from_dataset(ds)
+            grids, labels = apply_split(
+                raw_grids,
+                raw_labels,
+                train_ratio=self._train_ratio,
+                val_ratio=self._val_ratio,
+                seed=self._seed,
+            )
 
         # 4. Wrap and Preprocess
         preprocessor = ScientificPreprocessor(
@@ -157,35 +167,19 @@ class PhotonicAdapter(Z3Adapter):
 
     # ------------------------------------------------------------------ #
 
-    def _load_data(self) -> tuple[np.ndarray, np.ndarray]:
-        """Load grids + labels, preferring local data over HuggingFace.
-
-        Returns
-        -------
-        grids : np.ndarray
-            Shape ``(N_total, H, W, F)``.
-        labels : np.ndarray
-            Shape ``(N_total,)``.
-        """
+    def _load_data(self):
+        """Load the raw photonic dataset object."""
         # --- Try local disk first ---
         local_ds = try_load_from_local(self._data_root, "photonic")
         if local_ds is not None:
             log.info("PhotonicAdapter: loading from local data_root=%s", self._data_root)
-            return self._extract_from_dataset(local_ds)
+            return local_ds
 
         # --- Fall back to HuggingFace ---
         return self._load_from_huggingface()
 
-    def _load_from_huggingface(self) -> tuple[np.ndarray, np.ndarray]:
-        """Download and extract grids + labels from HuggingFace.
-
-        Returns
-        -------
-        grids : np.ndarray
-            Shape ``(N_total, H, W, F)``.
-        labels : np.ndarray
-            Shape ``(N_total,)``.
-        """
+    def _load_from_huggingface(self):
+        """Download the raw photonic dataset object from HuggingFace."""
         try:
             from datasets import load_dataset
         except ImportError as exc:
@@ -198,9 +192,9 @@ class PhotonicAdapter(Z3Adapter):
             "Loading 2D photonic topology from HuggingFace: %s",
             self._spec.hf_repo,
         )
-        ds = load_dataset(self._spec.hf_repo, split="train", trust_remote_code=True)
+        ds = load_dataset(self._spec.hf_repo, trust_remote_code=True)
 
-        return self._extract_from_dataset(ds)
+        return ds
 
     def _extract_from_dataset(self, ds) -> tuple[np.ndarray, np.ndarray]:
         """Extract grids + labels from a HuggingFace Dataset object.
@@ -252,6 +246,7 @@ class PhotonicAdapter(Z3Adapter):
             len(np.unique(labels)),
         )
         return grids, labels
+
 
     # ------------------------------------------------------------------ #
 
