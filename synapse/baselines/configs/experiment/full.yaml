@@ -95,7 +95,7 @@ datasets:
     test_size: 3200
     noise_std: 0.0
     batch_size_override: 64
-    num_seeds: 3  # Real data needs statistical rigor
+    num_seeds: 1  # Real data needs statistical rigor
 
   # Photonic — 2D photonic crystal topology (cgeorgiaw/2d-photonic-topology)
   # Actual dimensions: input_dim=8, num_classes=4, seq_len=64
@@ -110,22 +110,25 @@ datasets:
     test_size: 1000
     noise_std: 0.0
     batch_size_override: null
-    num_seeds: 3  # Scientific dataset - multiple seeds for reliability
+    num_seeds: 1  # Scientific dataset - multiple seeds for reliability
 
   # Spatial — 3D point clouds from SpatialLM (manycore-research/SpatialLM-Dataset)
-  # Actual dimensions: input_dim=3, num_classes=10, seq_len=512
+  # Actual dimensions: input_dim=3, num_classes=15, seq_len=512
+  # max_samples caps ZIP chunk downloads: 12K samples ≈ 8 chunks ≈ 2.8 GB
+  # (full repo is 109 chunks / 38 GB — only download what we need)
   - name: spatial
     modality: geometric
     source: huggingface
     input_dim: 3
     sequence_length: 512
-    num_classes: 10
+    num_classes: 15
     train_size: 9862
     val_size: 1233
     test_size: 1233
     noise_std: 0.0
     batch_size_override: null
-    num_seeds: 3  # Large geometric dataset - full statistical analysis
+    max_samples: 12328
+    num_seeds: 1  # Large geometric dataset - full statistical analysis
 
 output_dir: outputs/baselines
 

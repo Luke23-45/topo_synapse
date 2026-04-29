@@ -40,7 +40,7 @@ def get_prepared_cache_dir(
     """Generate a unique directory path for a prepared dataset split."""
     root = Path(data_root) / dataset_name / "prepared"
     # Construct a unique configuration ID
-    params = f"T{spec.sequence_length}_D{spec.input_dim}_S{seed}_R{int(train_ratio*100)}_{int(val_ratio*100)}"
+    params = f"T{spec.sequence_length}_D{spec.input_dim}_C{spec.num_classes}_S{seed}_R{int(train_ratio*100)}_{int(val_ratio*100)}"
     if spec.max_samples is not None:
         params += f"_M{spec.max_samples}"
     if extra_key:

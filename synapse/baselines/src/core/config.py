@@ -121,6 +121,7 @@ class Z3DatasetSpec:
     noise_std: float = 0.03
     batch_size_override: Optional[int] = None
     max_episodes: Optional[int] = None
+    max_samples: Optional[int] = None  # Cap on samples loaded (limits HF downloads)
     data_root: Optional[str] = None
     num_seeds: Optional[int] = None  # Per-dataset seed count; None = use global stats.num_seeds
 

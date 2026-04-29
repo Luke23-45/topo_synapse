@@ -193,7 +193,7 @@ class TelecomAdapter(Z3Adapter):
             logger.setLevel(logging.WARNING)
 
         try:
-            ds = load_dataset(self._spec.hf_repo, tqdm_enabled=False)
+            ds = load_dataset(self._spec.hf_repo)
         finally:
             for name, level in saved_levels.items():
                 logging.getLogger(name).setLevel(level)

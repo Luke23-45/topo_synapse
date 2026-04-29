@@ -63,8 +63,19 @@ def extract_predefined_splits(
 
     Supports HuggingFace ``DatasetDict``-style objects with canonical or
     near-canonical split names. If only train/test are present, a stratified
-    validation split is carved out of train.
+    validation split is carved out of train. Datasets that expose a single
+    physical split with an embedded row-level ``split`` field are also
+    supported.
     """
+    embedded = _extract_embedded_splits(
+        ds,
+        extract_array=extract_array,
+        extract_label=extract_label,
+        max_samples=max_samples,
+    )
+    if embedded is not None:
+        return embedded
+
     if not hasattr(ds, "keys"):
         return None
 
@@ -76,6 +87,16 @@ def extract_predefined_splits(
 
     if "train" not in split_map:
         return None
+
+    if len(split_map) == 1 and "train" in split_map:
+        embedded = _extract_embedded_splits(
+            split_map["train"],
+            extract_array=extract_array,
+            extract_label=extract_label,
+            max_samples=max_samples,
+        )
+        if embedded is not None:
+            return embedded
 
     if "test" not in split_map and "val" not in split_map:
         return None
@@ -214,8 +235,11 @@ def _extract_records(
         arr = extract_array(record)
         if arr is None:
             continue
+        label = int(extract_label(record))
+        if label < 0:
+            continue
         arrays_list.append(arr.astype(np.float32, copy=False))
-        labels_list.append(int(extract_label(record)))
+        labels_list.append(label)
 
     if not arrays_list:
         return np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.int64)
@@ -224,6 +248,104 @@ def _extract_records(
         np.stack(arrays_list, axis=0).astype(np.float32),
         np.asarray(labels_list, dtype=np.int64),
     )
+
+
+def _extract_embedded_splits(
+    ds: Any,
+    *,
+    extract_array: Callable[[dict[str, Any]], np.ndarray | None],
+    extract_label: Callable[[dict[str, Any]], int],
+    max_samples: int | None,
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]] | None:
+    if hasattr(ds, "keys"):
+        return None
+
+    split_records: dict[str, list[dict[str, Any]]] = {"train": [], "val": [], "test": []}
+    saw_embedded_split = False
+
+    for record in ds:
+        split_name = _record_split_name(record)
+        if split_name is None:
+            continue
+        saw_embedded_split = True
+        split_records[split_name].append(record)
+
+    if not saw_embedded_split or not split_records["train"]:
+        return None
+    if not split_records["val"] and not split_records["test"]:
+        return None
+
+    budgets = _allocate_record_budgets(split_records, max_samples)
+    extracted: dict[str, np.ndarray] = {}
+    extracted_labels: dict[str, np.ndarray] = {}
+
+    for split_name in ("train", "val", "test"):
+        arr, lbl = _extract_records(
+            split_records[split_name],
+            extract_array,
+            extract_label,
+            budgets.get(split_name),
+        )
+        if arr.size == 0:
+            continue
+        extracted[split_name] = arr
+        extracted_labels[split_name] = lbl
+
+    if {"train", "val", "test"} <= extracted.keys():
+        return (
+            {
+                "train": extracted["train"],
+                "val": extracted["val"],
+                "test": extracted["test"],
+            },
+            {
+                "train": extracted_labels["train"],
+                "val": extracted_labels["val"],
+                "test": extracted_labels["test"],
+            },
+        )
+    return None
+
+
+def _record_split_name(record: Any) -> str | None:
+    if not isinstance(record, dict):
+        return None
+    for key in ("split", "partition", "fold"):
+        raw_name = record.get(key)
+        if raw_name is None:
+            continue
+        canonical = _canonical_split_name(str(raw_name).strip())
+        if canonical is not None:
+            return canonical
+    return None
+
+
+def _allocate_record_budgets(
+    split_records: dict[str, list[dict[str, Any]]],
+    max_samples: int | None,
+) -> dict[str, int | None]:
+    if max_samples is None:
+        return {name: None for name in split_records}
+
+    sizes = {name: len(records) for name, records in split_records.items()}
+    total = sum(sizes.values())
+    if total <= 0:
+        return {name: 0 for name in split_records}
+
+    budgets: dict[str, int] = {}
+    remaining = max_samples
+    present = [name for name in ("train", "val", "test") if sizes[name] > 0]
+    for idx, split_name in enumerate(present):
+        if idx == len(present) - 1:
+            budgets[split_name] = min(remaining, sizes[split_name])
+            continue
+        portion = int(round(max_samples * (sizes[split_name] / total)))
+        portion = max(1, min(portion, sizes[split_name], remaining))
+        budgets[split_name] = portion
+        remaining -= portion
+    for split_name in split_records:
+        budgets.setdefault(split_name, 0)
+    return budgets
 
 
 __all__ = ["apply_split", "extract_predefined_splits", "try_load_from_local"]
