@@ -12,12 +12,18 @@ Reuses
 
 from __future__ import annotations
 
+import logging
 import warnings
 import yaml
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Tuple
+
+log = logging.getLogger(__name__)
+
+# Directory containing per-backbone overlay YAML files.
+BACKBONE_CONFIG_DIR = Path(__file__).resolve().parent.parent.parent / "configs"
 
 
 # ---------------------------------------------------------------------------
@@ -250,38 +256,39 @@ class Z3ExperimentConfig:
     # ------------------------------------------------------------------
 
     def for_backbone(self, backbone: BackboneCondition) -> Z3ExperimentConfig:
-        """Create a copy with a different backbone + auto-set loss weights.
+        """Create a copy with a different backbone, merging its overlay YAML.
 
-        Mirrors the legacy pattern where B-condition auto-enables
-        auxiliary losses.
+        Resolution: base config → backbone overlay → (caller chains
+        ``for_dataset()`` and ``for_seed()`` afterwards).
+
+        The overlay YAML (e.g. ``configs/deep_hodge.yaml``) contains only
+        the fields that differ from the base experiment config.  This
+        replaces the previous hardcoded if/else loss-weight logic with
+        a data-driven, extensible mechanism.
         """
-        if backbone == BackboneCondition.DEEP_HODGE:
-            new_loss = LossParams(
-                proxy_weight=1e-3,
-                sparsity_weight=1e-4,
-                aux_ramp_start=self.loss.aux_ramp_start,
-                aux_ramp_end=self.loss.aux_ramp_end,
-            )
-        else:
-            new_loss = LossParams(
-                proxy_weight=0.0,
-                sparsity_weight=0.0,
-                aux_ramp_start=self.loss.aux_ramp_start,
-                aux_ramp_end=self.loss.aux_ramp_end,
+        overlay = load_backbone_overlay(backbone.value)
+        if overlay is None:
+            # No overlay file exists — just swap the backbone enum.
+            return Z3ExperimentConfig(
+                backbone=backbone,
+                seed=self.seed,
+                model=self.model,
+                training=self.training,
+                loss=self.loss,
+                stats=self.stats,
+                rollout=self.rollout,
+                datasets=self.datasets,
+                output_dir=self.output_dir,
+                experiment_name=self.experiment_name,
             )
 
-        return Z3ExperimentConfig(
-            backbone=backbone,
-            seed=self.seed,
-            model=self.model,
-            training=self.training,
-            loss=new_loss,
-            stats=self.stats,
-            rollout=self.rollout,
-            datasets=self.datasets,
-            output_dir=self.output_dir,
-            experiment_name=self.experiment_name,
-        )
+        # Deep-merge overlay into the current config's dict representation.
+        base_dict = self.to_dict()
+        merged = _deep_merge(base_dict, overlay)
+        # Ensure the backbone enum is set correctly (overlay may carry
+        # the string name, but we always use the caller's enum).
+        merged["backbone"] = backbone.value
+        return _config_from_dict(merged)
 
     def for_dataset(self, dataset_spec: Z3DatasetSpec) -> Z3ExperimentConfig:
         """Create a dataset-specific config by overriding dimensions.
@@ -484,6 +491,46 @@ def _config_from_dict(raw: dict) -> Z3ExperimentConfig:
     )
 
 
+# ---------------------------------------------------------------------------
+# Backbone overlay loading
+# ---------------------------------------------------------------------------
+
+def _deep_merge(base: dict, overlay: dict) -> dict:
+    """Recursively merge *overlay* into a copy of *base*.
+
+    - Dict values are merged recursively (overlay wins on conflicts).
+    - Non-dict values from overlay replace base values.
+    - base is never mutated; a new dict is returned.
+    """
+    result = dict(base)
+    for key, value in overlay.items():
+        if (
+            key in result
+            and isinstance(result[key], dict)
+            and isinstance(value, dict)
+        ):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def load_backbone_overlay(backbone_name: str) -> dict | None:
+    """Load a backbone-specific overlay YAML from ``BACKBONE_CONFIG_DIR``.
+
+    Returns the parsed dict, or ``None`` if no overlay file exists
+    (which is valid — the base config is used as-is).
+    """
+    overlay_path = BACKBONE_CONFIG_DIR / f"{backbone_name}.yaml"
+    if not overlay_path.exists():
+        log.debug("No backbone overlay at %s — using base config only", overlay_path)
+        return None
+    with open(overlay_path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    log.debug("Loaded backbone overlay: %s (%d keys)", overlay_path.name, len(raw))
+    return raw
+
+
 __all__ = [
     "BackboneCondition",
     "Z3DatasetSpec",
@@ -494,4 +541,6 @@ __all__ = [
     "RolloutParams",
     "Z3ExperimentConfig",
     "load_experiment_config",
+    "load_backbone_overlay",
+    "BACKBONE_CONFIG_DIR",
 ]

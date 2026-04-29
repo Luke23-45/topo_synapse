@@ -1,6 +1,12 @@
 # Z3 Baseline Study — Full Experiment
 # 5 backbones × all registered datasets × 3 seeds
 #
+# Config resolution (later layers override earlier):
+#   1. This base experiment YAML
+#   2. Backbone overlay YAML  (configs/mlp.yaml, configs/deep_hodge.yaml, ...)
+#   3. Dataset override        (input_dim, num_classes, batch_size, ...)
+#   4. Seed override           (just the random seed)
+#
 # Backbones: MLP, TCN, PTv3, SNN, Deep Hodge
 # Datasets: synthetic, + any registered in synapse.dataset.registry
 #
@@ -12,23 +18,13 @@ backbone: mlp
 seed: 42
 experiment_name: z3_baseline_full
 
+# Base model defaults — shared across all backbones.
+# Backbone-specific overrides (e.g. num_layers for PTv3, k for Deep Hodge)
+# come from the overlay YAMLs in configs/{backbone}.yaml.
 model:
   d_model: 64
   hidden_dim: 64
-  num_layers: 2
-  num_heads: 4
-  ffn_ratio: 4
   dropout: 0.1
-  k: 16
-  num_scales: 3
-  max_proxy_points: 16
-  K: 8
-  r: 1
-  lam: 0.5
-  drop_path: 0.1
-  k_neighbors: 16
-  use_coords: true
-  kernel_size: 3
 
 training:
   max_epochs: 50
@@ -49,6 +45,7 @@ training:
   fused_adamw: true
   save_checkpoints: true
 
+# Base loss defaults — backbone overlays set proxy/sparsity weights.
 loss:
   proxy_weight: 0.0
   sparsity_weight: 0.0
@@ -83,16 +80,16 @@ datasets:
     batch_size_override: null
 
   # Example: add more datasets by registering adapters in synapse.dataset.registry
-  # - name: telecom
-  #   modality: temporal
-  #   source: synthetic
-  #   input_dim: 4
-  #   sequence_length: 256
-  #   num_classes: 6
-  #   train_size: 1024
-  #   val_size: 256
-  #   test_size: 256
-  #   noise_std: 0.05
-  #   batch_size_override: 64
+  - name: telecom
+    modality: temporal
+    source: synthetic
+    input_dim: 4
+    sequence_length: 256
+    num_classes: 6
+    train_size: 1024
+    val_size: 256
+    test_size: 256
+    noise_std: 0.05
+    batch_size_override: 64
 
 output_dir: outputs/baselines

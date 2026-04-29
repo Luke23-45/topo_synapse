@@ -1,24 +1,12 @@
-# MLP Baseline Configuration — Sanity Check
+# MLP Baseline Overlay — Sanity Check
 # Flattens encoded tokens and passes through 3-layer MLP.
+# Overlay: only fields that differ from the base experiment config.
 
-backbone_type: mlp
-modality: temporal
+backbone: mlp
 
 model:
-  d_model: 64
   hidden_dim: 256
-  dropout: 0.1
-  num_classes: 4
-  num_tokens: 128
-
-training:
-  learning_rate: 1e-3
-  weight_decay: 1e-4
-  batch_size: 32
-  epochs: 50
-  warmup_steps: 500
-  gradient_clip_norm: 1.0
 
 loss:
-  proxy_weight: 0.0       # No proxy loss for MLP
-  sparsity_weight: 0.0    # No sparsity loss for MLP
+  proxy_weight: 0.0
+  sparsity_weight: 0.0

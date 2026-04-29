@@ -1,12 +1,10 @@
-# Deep Hodge-Transformer Configuration — Proposed Model
+# Deep Hodge Overlay — Proposed Model
 # Hodge Laplacian attention with topological preprocessing.
+# Overlay: only fields that differ from the base experiment config.
 
-backbone_type: deep_hodge
-modality: topological    # auto-forced by unified model
+backbone: deep_hodge
 
 model:
-  d_model: 64
-  hidden_dim: 64
   num_layers: 2
   k: 16                  # latent geometric (lift) dimension
   num_scales: 3          # spectral scales
@@ -14,16 +12,6 @@ model:
   K: 8                   # max anchors
   r: 1                   # refractory separation
   lam: 0.5               # selector regularization
-  num_classes: 4
-  num_tokens: 128
-
-training:
-  learning_rate: 1e-3
-  weight_decay: 1e-4
-  batch_size: 32
-  epochs: 50
-  warmup_steps: 500
-  gradient_clip_norm: 1.0
 
 loss:
   proxy_weight: 1e-3
