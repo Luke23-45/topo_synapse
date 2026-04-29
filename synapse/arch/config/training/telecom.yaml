@@ -1,0 +1,22 @@
+# Telecom dataset configuration
+# ============================
+# Overrides for telecom call sequence classification dataset
+
+dataset: telecom
+
+data:
+  dataset: telecom
+  train_size: null
+  val_size: null
+  test_size: null
+  max_samples: null
+  data_root: null
+
+model:
+  input_dim: 8
+  output_dim: 5
+  max_history_tokens: 256
+
+training:
+  batch_size: 64
+  max_epochs: 50

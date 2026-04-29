@@ -1,0 +1,9 @@
+# Z3 SYNAPSE Root Configuration
+# ============================
+
+defaults:
+  - _self_
+  - experiment: null
+
+# This file is intentionally sparse to allow experiments 
+# (like smoke.yaml) to define their own structure without merge conflicts.

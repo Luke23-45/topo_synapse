@@ -1,0 +1,43 @@
+{
+  "evaluations": {
+    "mlp": {
+      "backbone": "mlp",
+      "accuracy": 1.0,
+      "f1_macro": 1.0,
+      "mean_loss": 5.122273494251317e-08,
+      "per_class_accuracy": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "confusion_matrix": [
+        [
+          29,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          31,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          38,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          30
+        ]
+      ]
+    }
+  },
+  "comparisons": []
+}

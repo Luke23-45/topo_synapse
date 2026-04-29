@@ -1,0 +1,57 @@
+# Default inference configuration
+# =================================
+# Config for running inference with trained Z3 SYNAPSE models
+
+defaults:
+  - dataset: synthetic
+  - hydra: default
+
+# Experiment metadata
+experiment:
+  name: synapse_z3_inference
+  tags: ["z3", "synapse", "inference"]
+  group: default
+
+# Model architecture (must match training checkpoint)
+model:
+  input_dim: 2
+  output_dim: 4
+  hidden_dim: 64
+  d_model: 64
+  num_heads: 4
+  num_layers: 2
+  ffn_ratio: 4
+  dropout: 0.1
+  K: 8
+  r: 1
+  lam: 0.5
+  Q: 1
+  k: 16
+  num_scales: 3
+  num_eigs: 4
+  max_proxy_points: 16
+  tau: 1e-4
+  max_history_tokens: 128
+  task: classification
+
+# Data configuration
+data:
+  dataset: synthetic
+  noise_std: 0.03
+  num_samples: 4
+  seed: 17
+
+# Execution configuration
+execution:
+  seed: 7
+  deterministic: false
+
+# Checkpoint to use for inference
+checkpoint:
+  path: null  # required: path to .pt checkpoint
+
+# Output configuration
+output:
+  path: synapse_outputs/infer.json
+  save_predictions: true
+  save_embeddings: false

@@ -1,0 +1,13 @@
+loss_config:
+  proxy_weight: 0.0
+  sparsity_weight: 0.0
+  aux_ramp_start: 0
+  aux_ramp_end: 3
+lr: 0.001
+weight_decay: 0.0001
+beta1: 0.9
+beta2: 0.999
+warmup_steps: 10
+gradient_clip_norm: 1.0
+fused_adamw: true
+compile_model: false

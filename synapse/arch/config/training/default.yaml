@@ -1,0 +1,127 @@
+# Default training configuration for Z3 SYNAPSE models
+# ===================================================
+# This config uses Hydra + OmegaConf for modular, production-grade experiment management.
+# Override values via command line: python -m synapse.synapse.scripts.train dataset=telecom training.max_epochs=50
+
+# defaults:
+#   - /dataset: synthetic
+#   - _self_
+
+# Experiment metadata
+experiment:
+  name: synapse_z3_training
+  tags: ["z3", "synapse", "topology-first"]
+  group: default
+
+# Model architecture (Z3TopologyFirstModel)
+model:
+  input_dim: 2
+  output_dim: 4
+  hidden_dim: 64
+  d_model: 64
+  num_heads: 4
+  num_layers: 2
+  ffn_ratio: 4
+  dropout: 0.1
+  # Anchor selection (§5–6 of 01_main_definition.md)
+  K: 8
+  r: 1
+  lam: 0.5
+  # Topology (§9, §12 of 01_main_definition.md)
+  Q: 1
+  k: 16
+  num_scales: 3
+  num_eigs: 4
+  max_proxy_points: 16
+  tau: 1e-4
+  # Sequence
+  max_history_tokens: 128
+  # Task
+  task: classification
+  loss: cross_entropy
+  proxy_weight: 1.0
+
+# Training hyperparameters (Lightning Trainer)
+training:
+  batch_size: 32
+  max_epochs: 10
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  beta1: 0.9
+  beta2: 0.999
+  warmup_steps: 500
+  gradient_clip_norm: 1.0
+  early_stopping_patience: 10
+  use_amp: true
+  compile_model: false
+  fused_adamw: true
+  accumulate_grad_batches: 1
+
+# Loss configuration
+loss:
+  proxy_weight: 0.001
+  sparsity_weight: 0.0001
+  action_weight: 1.0
+  action_beta: 0.5
+  aux_ramp_start: 2
+  aux_ramp_end: 10
+
+# EMA configuration
+ema:
+  decay: 0.999
+  every_n_steps: 1
+
+# Data configuration
+data:
+  train_size: 512
+  val_size: 128
+  test_size: 128
+  noise_std: 0.03
+  dataset: synthetic
+  data_root: null
+  max_samples: null
+  num_workers: 0
+  pin_memory: true
+
+# Execution configuration
+execution:
+  seed: 7
+  deterministic: false
+  benchmark: true
+
+# Lightning Trainer configuration
+trainer:
+  accelerator: auto
+  devices: auto
+  precision: auto
+  log_every_n_steps: 10
+  enable_checkpointing: true
+  enable_progress_bar: true
+  save_top_k: 1
+
+# Logging configuration
+logging:
+  logger: wandb
+  project: synapse-z3
+  output_dir: synapse_outputs/end_to_end
+  log_dir: logs
+
+# Dataset-specific overrides (loaded from config/training/{dataset}.yaml)
+dataset: synthetic
+
+# Checkpoint configuration
+checkpoint:
+  save_last: true
+  save_top_k: 1
+  monitor: val/loss
+  mode: min
+  filename: best-{epoch:03d}-{val/loss:.4f}
+
+# Post-training evaluation
+evaluation:
+  enabled: true
+  rollout:
+    enabled: true
+    n_steps: 10
+    noise_scale: 0.05
+    max_batches: 10

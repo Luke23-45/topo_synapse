@@ -1,0 +1,24 @@
+# TCN Baseline Configuration — Temporal Baseline
+# Dilated causal convolutions with residual connections.
+
+backbone_type: tcn
+modality: temporal
+
+model:
+  d_model: 64
+  num_channels: [64, 64, 64, 64]   # channel sizes per TemporalBlock
+  kernel_size: 3
+  dropout: 0.1
+  num_classes: 4
+
+training:
+  learning_rate: 1e-3
+  weight_decay: 1e-4
+  batch_size: 32
+  epochs: 50
+  warmup_steps: 500
+  gradient_clip_norm: 1.0
+
+loss:
+  proxy_weight: 0.0
+  sparsity_weight: 0.0

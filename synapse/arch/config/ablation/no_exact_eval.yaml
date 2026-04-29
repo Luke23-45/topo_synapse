@@ -1,0 +1,16 @@
+# No exact evaluation ablation configuration
+# ===========================================
+# Ablation: disable exact Hodge-spectral proxy evaluation
+
+defaults:
+  - ../training/default
+
+ablation:
+  disable_proxy: false
+  disable_exact_eval: true
+  disable_anchor_selection: false
+  disable_topology: false
+
+experiment:
+  name: synapse_z3_ablation_no_exact_eval
+  tags: ["z3", "synapse", "ablation", "no_exact_eval"]

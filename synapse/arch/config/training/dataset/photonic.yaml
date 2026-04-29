@@ -1,0 +1,16 @@
+# Photonic Topology Dataset Configuration
+# =====================================
+# 2D Photonic crystals with varying topological phases.
+# Z3 alignment: Direct test of the Hodge Laplacian Proxy.
+
+data:
+  dataset: photonic
+  modality: scientific
+  source: huggingface
+  hf_repo: cgeorgiaw/2d-photonic-topology
+  input_dim: 10
+  sequence_length: 64
+  num_classes: 4
+  task: classification
+  batch_size_override: 64
+  data_root: data/datasets

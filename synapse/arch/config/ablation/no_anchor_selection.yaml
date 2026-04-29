@@ -1,0 +1,16 @@
+# No anchor selection ablation configuration
+# =========================================
+# Ablation: disable anchor selection (bypass, use all points)
+
+defaults:
+  - ../training/default
+
+ablation:
+  disable_proxy: false
+  disable_exact_eval: false
+  disable_anchor_selection: true
+  disable_topology: false
+
+experiment:
+  name: synapse_z3_ablation_no_anchor_selection
+  tags: ["z3", "synapse", "ablation", "no_anchor_selection"]

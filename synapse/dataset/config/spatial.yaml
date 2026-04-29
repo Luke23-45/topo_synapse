@@ -1,0 +1,17 @@
+# Z3 Spatial Geometry Dataset
+# Primary: https://huggingface.co/datasets/manycore-research/SpatialLM-Dataset
+#   12,328 indoor scenes as 3D point clouds.
+#   Z3 alignment: DifferentiableHodgeProxy L1 for Betti-1 features.
+# Supporting: https://huggingface.co/datasets/InternRobotics/MeshCoderDataset
+#   1M object-code pairs for object-level structural detail.
+
+name: spatial
+modality: geometric
+source: huggingface
+hf_repo: manycore-research/SpatialLM-Dataset
+input_dim: 3
+sequence_length: 512
+num_classes: 10
+task: classification
+batch_size_override: 32
+data_root: data/datasets

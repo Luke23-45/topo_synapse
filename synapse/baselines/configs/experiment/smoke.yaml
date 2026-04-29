@@ -1,0 +1,75 @@
+# Z3 Baseline Study — Smoke Test
+# Quick validation with synthetic data, 3 epochs, 1 seed
+# Should complete in ~2 minutes
+
+backbone: mlp
+seed: 42
+experiment_name: z3_smoke
+
+model:
+  d_model: 64
+  hidden_dim: 64
+  num_layers: 2
+  num_heads: 4
+  ffn_ratio: 4
+  dropout: 0.1
+  k: 16
+  num_scales: 3
+  max_proxy_points: 16
+  K: 8
+  r: 1
+  lam: 0.5
+  drop_path: 0.1
+  k_neighbors: 16
+  use_coords: true
+  kernel_size: 3
+
+training:
+  max_epochs: 3
+  batch_size: 32
+  learning_rate: 1e-3
+  weight_decay: 1e-4
+  beta1: 0.9
+  beta2: 0.999
+  warmup_steps: 10
+  early_stopping_patience: 5
+  gradient_clip_norm: 1.0
+  use_amp: false
+  num_workers: 0
+  pin_memory: true
+  persistent_workers: false
+  prefetch_factor: 2
+  compile_model: false
+  fused_adamw: true
+  save_checkpoints: true
+
+loss:
+  proxy_weight: 0.0
+  sparsity_weight: 0.0
+  aux_ramp_start: 0
+  aux_ramp_end: 3
+
+stats:
+  num_seeds: 1
+  significance_level: 0.05
+  confidence_level: 0.95
+  num_bootstrap_samples: 100
+
+rollout:
+  n_steps: 5
+  noise_scale: 0.1
+  max_samples: 10
+
+datasets:
+  - name: synthetic
+    modality: temporal
+    source: synthetic
+    input_dim: 2
+    sequence_length: 128
+    num_classes: 4
+    train_size: 512
+    val_size: 128
+    test_size: 128
+    noise_std: 0.03
+
+output_dir: outputs/baselines
