@@ -1,0 +1,57 @@
+# Default deployment configuration
+# =================================
+# Config for deployment testing with exact-audit topology verification
+
+defaults:
+  - dataset: synthetic
+  - hydra: default
+
+# Experiment metadata
+experiment:
+  name: synapse_z3_deployment
+  tags: ["z3", "synapse", "deployment", "exact-audit"]
+  group: default
+
+# Model architecture (must match training checkpoint)
+model:
+  input_dim: 2
+  output_dim: 4
+  hidden_dim: 64
+  d_model: 64
+  num_heads: 4
+  num_layers: 2
+  ffn_ratio: 4
+  dropout: 0.1
+  K: 8
+  r: 1
+  lam: 0.5
+  Q: 1
+  k: 16
+  num_scales: 3
+  num_eigs: 4
+  max_proxy_points: 16
+  tau: 1e-4
+  max_history_tokens: 128
+  task: classification
+
+# Data configuration
+data:
+  dataset: synthetic
+  noise_std: 0.03
+  num_samples: 1
+  seed: 99
+
+# Execution configuration
+execution:
+  seed: 7
+  deterministic: false
+
+# Checkpoint to use for deployment test
+checkpoint:
+  path: null  # required: path to .pt checkpoint
+
+# Output configuration
+output:
+  path: synapse_outputs/deploy.json
+  save_audit: true
+  save_cloud: false

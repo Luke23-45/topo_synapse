@@ -1,0 +1,16 @@
+# No proxy ablation configuration
+# ===============================
+# Ablation: disable proxy (topology regularization)
+
+defaults:
+  - ../training/default
+
+ablation:
+  disable_proxy: true
+  disable_exact_eval: false
+  disable_anchor_selection: false
+  disable_topology: false
+
+experiment:
+  name: synapse_z3_ablation_no_proxy
+  tags: ["z3", "synapse", "ablation", "no_proxy"]

@@ -1,0 +1,12 @@
+output_dir: synapse_outputs/empirical
+seed: 7
+length: 64
+train_size: 128
+val_size: 64
+test_size: 64
+noise_std: 0.03
+epochs: 3
+batch_size: 32
+learning_rate: 0.001
+K_values: [4, 8]
+r_values: [1, 2]

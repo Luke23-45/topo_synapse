@@ -1,0 +1,31 @@
+# Ablation sweep experiment configuration
+# =====================================
+# Multi-ablation, single dataset, multi-seed
+# Usage: python -m synapse.synapse.scripts.train --multirun experiment=ablation_sweep ablation=baseline,no_proxy,no_exact_eval,no_anchor_selection,no_topology
+
+defaults:
+  - ../training/default
+
+experiment:
+  name: synapse_z3_ablation_sweep
+  tags: ["z3", "synapse", "ablation", "sweep"]
+  group: ablation
+
+dataset: synthetic
+
+execution:
+  seed:
+    - 42
+    - 43
+    - 44
+
+training:
+  max_epochs: 10
+  batch_size: 32
+  learning_rate: 0.001
+
+ablation:
+  disable_proxy: false
+  disable_exact_eval: false
+  disable_anchor_selection: false
+  disable_topology: false

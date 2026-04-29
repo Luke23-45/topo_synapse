@@ -1,0 +1,46 @@
+# Z3 Topology-First Publication Configuration
+# Higher capacity for paper-grade results
+
+# Data shape
+input_dim: 2
+output_dim: 4
+
+# Network architecture
+hidden_dim: 96
+d_model: 96
+num_heads: 4
+num_layers: 3
+ffn_ratio: 4
+dropout: 0.1
+
+# Anchor selection (§5–6)
+K: 12
+r: 2
+lam: 0.5
+
+# Topology (§9, §12)
+Q: 1
+k: 24
+num_scales: 4     # S: more scales for finer topology resolution
+num_eigs: 6       # J: more eigenvalues for richer spectral signature
+max_proxy_points: 16
+tau: 0.0001
+
+# Sequence
+max_history_tokens: 96
+
+# Task
+task: classification
+loss: cross_entropy
+proxy_weight: 1.0
+
+# Training
+learning_rate: 0.0005
+weight_decay: 0.0001
+batch_size: 32
+epochs: 12
+train_size: 1024
+val_size: 256
+test_size: 256
+noise_std: 0.04
+seed: 7

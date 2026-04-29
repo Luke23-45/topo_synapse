@@ -1,0 +1,291 @@
+# Empirical Experiment Configuration
+# Each top-level key is an experiment codename.
+# Parameters here replace the hardcoded values previously scattered across scripts.
+
+EZ3-01:
+  experiment_name: "Topology Value"
+  formal_reference: "Z3 proxy vs exact"
+  claim: "Topology-aware features should outperform uniform pooling on synthetic topology labels."
+  script: "empirical/src/components/topology_value.py"
+  params:
+    seed: 7
+    length: 64
+    noise_std: 0.03
+    train_size: 128
+    val_size: 64
+    test_size: 64
+  model:
+    input_dim: 2
+    output_dim: 4
+    K: 8
+    r: 1
+    Q: 1
+    k: 16
+    max_history_tokens: 64
+
+EZ3-02:
+  experiment_name: "Topological Stability Empirical"
+  formal_reference: "Z3 exact stability"
+  claim: "Exact summaries should remain finite under bounded noise."
+  script: "empirical/src/components/topological_stability_empirical.py"
+  params:
+    seed: 8
+    length: 64
+    noise_std: 0.02
+    noise_perturbation_std: 0.05
+    noise_seed: 9
+    n_samples: 16
+    train_size: 128
+    val_size: 64
+    test_size: 64
+  model:
+    input_dim: 2
+    output_dim: 4
+    K: 8
+    r: 1
+    Q: 1
+    k: 16
+    max_history_tokens: 64
+
+EZ3-03:
+  experiment_name: "Selector Gradient Flow"
+  formal_reference: "Z3 train-time proxy"
+  claim: "Proxy/readout training path should backpropagate into lift and sequence projection."
+  script: "empirical/src/components/selector_gradient_flow.py"
+  params:
+    seed: 9
+    length: 64
+    noise_std: 0.03
+    n_batch: 8
+    train_size: 128
+    val_size: 64
+    test_size: 64
+  model:
+    input_dim: 2
+    output_dim: 4
+    K: 8
+    r: 1
+    Q: 1
+    k: 16
+    max_history_tokens: 64
+
+EZ3-04:
+  experiment_name: "Metric Structure Validation"
+  formal_reference: "Z3 topology summaries"
+  claim: "In-class exact-summary distances should be lower than cross-class distances."
+  script: "empirical/src/components/metric_structure_validation.py"
+  params:
+    seed: 10
+    length: 64
+    noise_std: 0.02
+    n_samples: 24
+    train_size: 128
+    val_size: 64
+    test_size: 64
+  model:
+    input_dim: 2
+    output_dim: 4
+    K: 8
+    r: 1
+    Q: 1
+    k: 16
+    max_history_tokens: 64
+
+EZ3-05:
+  experiment_name: "Causality Verification"
+  formal_reference: "Z3 causal prefix behavior"
+  claim: "Prefix saliency should ignore future perturbations."
+  script: "empirical/src/components/causality_verification.py"
+  params:
+    seed: 11
+    length: 64
+    noise_std: 0.03
+    prefix: 32
+    perturbation: 50.0
+    atol: 1.0e-5
+    train_size: 128
+    val_size: 64
+    test_size: 64
+  model:
+    input_dim: 2
+    output_dim: 4
+    K: 8
+    r: 1
+    Q: 1
+    k: 16
+    max_history_tokens: 64
+
+EZ3-06:
+  experiment_name: "Event Encoder Training Probe"
+  formal_reference: "Z3 event scoring"
+  claim: "Event saliency peaks should align with synthetic changepoints."
+  script: "empirical/src/components/event_encoder_training.py"
+  params:
+    seed: 12
+    length: 48
+    noise_std: 0.01
+    changepoints: [16, 32]
+    match_tolerance: 3
+    f1_threshold: 0.4
+    train_size: 128
+    val_size: 64
+    test_size: 64
+  model:
+    input_dim: 2
+    output_dim: 4
+    K: 8
+    r: 1
+    Q: 1
+    k: 16
+    max_history_tokens: 48
+
+EZ3-07:
+  experiment_name: "Exact Recovery Empirical"
+  formal_reference: "Z3 exact branch"
+  claim: "Exact audit should be deterministic on repeated calls."
+  script: "empirical/src/components/exact_recovery_empirical.py"
+  params:
+    seed: 13
+    length: 64
+    noise_std: 0.03
+    train_size: 128
+    val_size: 64
+    test_size: 64
+  model:
+    input_dim: 2
+    output_dim: 4
+    K: 8
+    r: 1
+    Q: 1
+    k: 16
+    max_history_tokens: 64
+
+EZ3-08:
+  experiment_name: "Hard Projection Properties"
+  formal_reference: "Z3 hard projection"
+  claim: "Projected anchors should remain ordered and separated."
+  script: "empirical/src/components/hard_projection_properties.py"
+  params:
+    K: 3
+    r: 1
+    pattern: [0.0, 0.9, 0.8, 0.1, 0.7, 0.2, 0.6]
+
+EZ3-09:
+  experiment_name: "Hyperparameter Sensitivity"
+  formal_reference: "Z3 K/r sensitivity"
+  claim: "Proxy classification should remain finite and measurable across K,r settings."
+  script: "empirical/src/components/hyperparameter_sensitivity.py"
+  params:
+    base_seed: 14
+    length: 64
+    noise_std: 0.03
+    accuracy_threshold: 0.2
+    grid:
+      - K: 4
+        r: 1
+      - K: 8
+        r: 1
+      - K: 8
+        r: 2
+    train_size: 128
+    val_size: 64
+    test_size: 64
+  model:
+    input_dim: 2
+    output_dim: 4
+    K: 8
+    r: 1
+    Q: 1
+    k: 16
+    max_history_tokens: 64
+
+EZ3-10:
+  experiment_name: "Lift Training"
+  formal_reference: "Z3 topology lift"
+  claim: "Lift parameters should update under downstream supervision."
+  script: "empirical/src/components/lift_training.py"
+  params:
+    seed: 15
+    length: 64
+    noise_std: 0.03
+    n_batch: 16
+    n_steps: 2
+    learning_rate: 1.0e-3
+    train_size: 128
+    val_size: 64
+    test_size: 64
+  model:
+    input_dim: 2
+    output_dim: 4
+    K: 8
+    r: 1
+    Q: 1
+    k: 16
+    max_history_tokens: 64
+
+EZ3-11:
+  experiment_name: "Memory Sufficiency Enhanced"
+  formal_reference: "Z3 exact summary regression"
+  claim: "Exact summaries should support nontrivial recovery of structured memory targets."
+  script: "empirical/src/components/memory_sufficiency_enhanced.py"
+  params:
+    seed: 16
+    length: 64
+    noise_std: 0.02
+    n_samples: 96
+    n_train: 64
+    train_size: 128
+    val_size: 64
+    test_size: 64
+  model:
+    input_dim: 2
+    output_dim: 4
+    K: 8
+    r: 1
+    Q: 1
+    k: 16
+    max_history_tokens: 64
+
+EZ3-12:
+  experiment_name: "Scalability Benchmark"
+  formal_reference: "Z3 empirical runtime"
+  claim: "Proxy computation should remain finite across increasing sequence lengths."
+  script: "empirical/src/components/scalability_benchmark.py"
+  params:
+    base_seed: 17
+    noise_std: 0.03
+    n_batch: 8
+    lengths: [32, 64, 96]
+    train_size: 128
+    val_size: 64
+    test_size: 64
+  model:
+    input_dim: 2
+    output_dim: 4
+    K: 8
+    r: 1
+    Q: 1
+    k: 16
+    max_history_tokens: 64
+
+EZ3-13:
+  experiment_name: "Train Deploy Consistency"
+  formal_reference: "Z3 proxy vs exact"
+  claim: "Dense proxy and exact audit should both remain finite and sample-aligned."
+  script: "empirical/src/components/train_deploy_consistency.py"
+  params:
+    seed: 18
+    length: 64
+    noise_std: 0.03
+    n_samples: 10
+    train_size: 128
+    val_size: 64
+    test_size: 64
+  model:
+    input_dim: 2
+    output_dim: 4
+    K: 8
+    r: 1
+    Q: 1
+    k: 16
+    max_history_tokens: 64

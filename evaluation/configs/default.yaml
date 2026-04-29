@@ -1,0 +1,41 @@
+# Default evaluation configuration
+# Applies to all datasets unless overridden by a dataset-specific config.
+
+# Task metrics
+metrics:
+  - accuracy
+  - loss
+  - top_k_accuracy
+  - per_class_accuracy
+  - confusion_matrix
+
+# Topology metrics
+topology:
+  proxy_exact_alignment: true
+  max_samples: 64
+
+# Robustness sweeps (modality-specific overrides will add more)
+robustness:
+  noise_sweep:
+    enabled: false
+    levels: [0.0, 0.01, 0.03, 0.05, 0.1, 0.2]
+  rotation_sweep:
+    enabled: false
+  feature_importance:
+    enabled: false
+
+# Reporting
+reporting:
+  formats:
+    - json
+    - markdown
+  figures:
+    - confusion_matrix
+    - learning_curves
+    - topology_alignment
+
+# Statistical comparisons
+statistics:
+  significance_level: 0.05
+  n_bootstrap: 10000
+  bonferroni_correction: true

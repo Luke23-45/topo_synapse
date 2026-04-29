@@ -1,0 +1,39 @@
+# Telecom dataset evaluation config
+# Modality: temporal | Task: classification
+
+metrics:
+  - accuracy
+  - loss
+  - top_k_accuracy
+  - per_class_accuracy
+  - confusion_matrix
+
+topology:
+  proxy_exact_alignment: true
+  max_samples: 64
+
+robustness:
+  noise_sweep:
+    enabled: true
+    levels: [0.0, 0.01, 0.03, 0.05, 0.1, 0.15]
+  length_sweep:
+    enabled: false
+  rotation_sweep:
+    enabled: false
+  feature_importance:
+    enabled: false
+
+reporting:
+  formats:
+    - json
+    - markdown
+  figures:
+    - confusion_matrix
+    - learning_curves
+    - topology_alignment
+    - noise_robustness
+
+statistics:
+  significance_level: 0.05
+  n_bootstrap: 10000
+  bonferroni_correction: true
