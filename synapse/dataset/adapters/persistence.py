@@ -38,10 +38,15 @@ def get_prepared_cache_dir(
 
 
 def save_prepared_bundle(cache_dir: Path, bundle: DatasetBundle) -> None:
-    """Save a DatasetBundle to a modular directory structure."""
+    """Save a DatasetBundle to a modular directory structure.
+
+    Numpy arrays in metadata are saved as separate ``.npz`` files under
+    a ``metadata_arrays/`` sub-directory so that the JSON spec file only
+    contains JSON-serializable scalars and strings.
+    """
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # 1. Save individual splits
         for split in ["train", "val", "test"]:
             seqs = getattr(bundle, f"{split}_sequences")
@@ -49,10 +54,27 @@ def save_prepared_bundle(cache_dir: Path, bundle: DatasetBundle) -> None:
             np.savez_compressed(
                 cache_dir / f"{split}.npz",
                 sequences=seqs,
-                labels=labels
+                labels=labels,
             )
-        
-        # 2. Save spec and metadata
+
+        # 2. Separate ndarray values from JSON-safe metadata
+        json_metadata: dict[str, Any] = {}
+        array_keys: list[str] = []
+
+        for key, value in bundle.metadata.items():
+            if isinstance(value, np.ndarray):
+                array_keys.append(key)
+            else:
+                json_metadata[key] = value
+
+        # Save ndarray metadata values as individual .npz files
+        if array_keys:
+            arr_dir = cache_dir / "metadata_arrays"
+            arr_dir.mkdir(exist_ok=True)
+            for key in array_keys:
+                np.save(arr_dir / f"{key}.npy", bundle.metadata[key])
+
+        # 3. Save spec and JSON-safe metadata
         spec_dict = {
             "name": bundle.spec.name,
             "modality": bundle.spec.modality,
@@ -61,37 +83,50 @@ def save_prepared_bundle(cache_dir: Path, bundle: DatasetBundle) -> None:
             "num_classes": bundle.spec.num_classes,
             "task": bundle.spec.task,
         }
-        
+
         with open(cache_dir / "bundle_spec.json", "w") as f:
             json.dump({
                 "spec": spec_dict,
-                "metadata": bundle.metadata
+                "metadata": json_metadata,
+                "metadata_array_keys": array_keys,
             }, f, indent=2)
-            
+
         log.info("Saved modular prepared bundle to: %s", cache_dir)
     except Exception as e:
         log.warning("Failed to save modular prepared bundle: %s", e)
 
 
 def load_prepared_bundle(cache_dir: Path, expected_spec: DatasetSpec) -> DatasetBundle | None:
-    """Load a DatasetBundle from a modular directory structure."""
+    """Load a DatasetBundle from a modular directory structure.
+
+    Reconstructs ndarray metadata values from the ``metadata_arrays/``
+    sub-directory if present.
+    """
     if not cache_dir.is_dir():
         return None
 
     try:
         # 1. Verify spec
         spec_path = cache_dir / "bundle_spec.json"
+        metadata: dict[str, Any] = {}
         if spec_path.exists():
             with open(spec_path, "r") as f:
                 cached_data = json.load(f)
                 cached_spec = cached_data["spec"]
-                if (cached_spec["input_dim"] != expected_spec.input_dim or 
+                if (cached_spec["input_dim"] != expected_spec.input_dim or
                     cached_spec["sequence_length"] != expected_spec.sequence_length):
                     log.warning("Spec mismatch in %s. Re-extracting.", cache_dir.name)
                     return None
                 metadata = cached_data.get("metadata", {})
-        else:
-            metadata = {}
+
+            # Reconstruct ndarray metadata values
+            array_keys = cached_data.get("metadata_array_keys", [])
+            if array_keys:
+                arr_dir = cache_dir / "metadata_arrays"
+                for key in array_keys:
+                    arr_path = arr_dir / f"{key}.npy"
+                    if arr_path.exists():
+                        metadata[key] = np.load(arr_path)
 
         # 2. Load splits
         splits = {}
@@ -102,7 +137,7 @@ def load_prepared_bundle(cache_dir: Path, expected_spec: DatasetSpec) -> Dataset
             data = np.load(path)
             splits[f"{split}_sequences"] = data["sequences"]
             splits[f"{split}_labels"] = data["labels"]
-        
+
         bundle = DatasetBundle(
             train_sequences=splits["train_sequences"],
             train_labels=splits["train_labels"],
@@ -111,7 +146,7 @@ def load_prepared_bundle(cache_dir: Path, expected_spec: DatasetSpec) -> Dataset
             test_sequences=splits["test_sequences"],
             test_labels=splits["test_labels"],
             spec=expected_spec,
-            metadata=metadata
+            metadata=metadata,
         )
         log.info("Loaded modular prepared bundle from: %s", cache_dir.name)
         return bundle

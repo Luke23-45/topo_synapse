@@ -79,17 +79,18 @@ datasets:
     noise_std: 0.03
     batch_size_override: null
 
-  # Example: add more datasets by registering adapters in synapse.dataset.registry
+  # TelecomTS — 5G telemetry from HuggingFace (AliMaatouk/TelecomTS)
+  # Actual dimensions: input_dim=16, num_classes=3, seq_len=256
   - name: telecom
     modality: temporal
-    source: synthetic
-    input_dim: 4
+    source: huggingface
+    input_dim: 16
     sequence_length: 256
-    num_classes: 6
-    train_size: 1024
-    val_size: 256
-    test_size: 256
-    noise_std: 0.05
+    num_classes: 3
+    train_size: 25600
+    val_size: 3200
+    test_size: 3200
+    noise_std: 0.0
     batch_size_override: 64
 
 output_dir: outputs/baselines
