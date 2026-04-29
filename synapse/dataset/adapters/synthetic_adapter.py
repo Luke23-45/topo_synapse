@@ -97,7 +97,7 @@ class SyntheticAdapter(Z3Adapter):
     def load_splits(self) -> DatasetBundle:
         """Generate synthetic topology data and return pre-split arrays (with disk caching)."""
         # 1. Check for prepared cache
-        cache_root = Path(self._data_root or "data/datasets")
+        cache_root = Path(self._data_root or "data/datasets").resolve()
         
         # Calculate ratio for the cache key
         total = self._train_size + self._val_size + self._test_size

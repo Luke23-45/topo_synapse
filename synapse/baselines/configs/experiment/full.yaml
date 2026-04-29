@@ -94,3 +94,9 @@ datasets:
     batch_size_override: 64
 
 output_dir: outputs/baselines
+
+# Root directory for downloaded/prepared dataset caches.
+# Uses an absolute-ish path so the cache is found regardless of CWD.
+# On Colab, mount Drive and set this to /content/drive/MyDrive/data/datasets
+# to persist across sessions.
+data_root: data/datasets

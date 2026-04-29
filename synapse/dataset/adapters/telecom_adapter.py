@@ -28,7 +28,14 @@ from tqdm.auto import tqdm
 from ..preprocess.temporal import TemporalPreprocessor
 from ..registry import register_adapter
 from .base import DatasetBundle, DatasetSpec, Z3Adapter
-from .persistence import get_prepared_cache_dir, load_prepared_bundle, save_prepared_bundle
+from .persistence import (
+    get_prepared_cache_dir,
+    get_raw_cache_dir,
+    load_prepared_bundle,
+    load_raw_data,
+    save_prepared_bundle,
+    save_raw_data,
+)
 from .split_utils import apply_split, try_load_from_local
 
 log = logging.getLogger(__name__)
@@ -100,30 +107,45 @@ class TelecomAdapter(Z3Adapter):
         return self._spec.num_classes
 
     def load_splits(self) -> DatasetBundle:
-        """Load TelecomTS and return pre-split arrays (with disk caching).
-        
-        This is the primary entry point. It checks for prepared split
-        files on disk before falling back to raw extraction.
+        """Load TelecomTS and return pre-split arrays (with two-tier caching).
+
+        Cache resolution order:
+        1. **Prepared bundle** (seed-specific) — instant if found.
+        2. **Raw data cache** (seed-independent) — skip HF download,
+           only re-split and preprocess.
+        3. **HuggingFace download** — first run only; saves to both
+           raw cache and prepared bundle cache.
 
         Returns
         -------
         DatasetBundle
         """
-        # 1. Check for final prepared splits first
-        cache_dir = Path(self._data_root or "data/datasets")
-        cache_path = get_prepared_cache_dir(
-            cache_dir, "telecom", self._spec, self._seed, self._train_ratio, self._val_ratio
+        data_root = Path(self._data_root or "data/datasets").resolve()
+
+        # 1. Check for final prepared splits (fastest path)
+        prepared_path = get_prepared_cache_dir(
+            data_root, "telecom", self._spec, self._seed,
+            self._train_ratio, self._val_ratio,
         )
-        
-        bundle = load_prepared_bundle(cache_path, self._spec)
+        bundle = load_prepared_bundle(prepared_path, self._spec)
         if bundle is not None:
             return bundle
 
-        # 2. If no prepared cache, load raw data (local or HF)
-        log.info("No prepared cache found for TelecomTS. Starting extraction...")
-        raw_sequences, raw_labels = self._load_data()
+        # 2. Check raw data cache (skip HF download)
+        raw_path = get_raw_cache_dir(data_root, "telecom", self._spec)
+        raw_data = load_raw_data(raw_path, self._spec)
 
-        # 3. Apply splits
+        if raw_data is not None:
+            log.info("Raw data cache hit — skipping HuggingFace download.")
+            raw_sequences, raw_labels = raw_data
+        else:
+            # 3. Download / extract from HuggingFace (first run only)
+            log.info("No raw cache found for TelecomTS. Downloading...")
+            raw_sequences, raw_labels = self._load_data()
+            # Save raw data for future seeds
+            save_raw_data(raw_path, raw_sequences, raw_labels, self._spec)
+
+        # 4. Apply seed-dependent split
         sequences, labels = apply_split(
             raw_sequences,
             raw_labels,
@@ -132,7 +154,7 @@ class TelecomAdapter(Z3Adapter):
             seed=self._seed,
         )
 
-        # 4. Wrap and Preprocess
+        # 5. Preprocess
         preprocessor = TemporalPreprocessor(target_length=self._target_length)
         bundle = DatasetBundle(
             train_sequences=sequences["train"],
@@ -145,9 +167,9 @@ class TelecomAdapter(Z3Adapter):
         )
         bundle = preprocessor(bundle)
 
-        # 5. Save the FINAL PREPARED data to disk for next time
-        save_prepared_bundle(cache_path, bundle)
-        
+        # 6. Save prepared bundle for this seed
+        save_prepared_bundle(prepared_path, bundle)
+
         return bundle
 
     # ------------------------------------------------------------------ #

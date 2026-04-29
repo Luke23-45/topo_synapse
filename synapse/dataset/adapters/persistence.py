@@ -1,8 +1,16 @@
 """Dataset Bundle Persistence.
 
-Provides functions to save and load prepared ``DatasetBundle`` objects
-to/from disk as compressed numpy archives, allowing for instant
-resumption of training without re-extracting from raw sources.
+Two-tier caching strategy:
+
+1. **Raw data cache** — stores the extracted (sequences, labels) arrays
+   *before* any seed-dependent splitting.  Keyed by dataset name,
+   input_dim, and max_samples (no seed).  This avoids re-downloading
+   from HuggingFace when only the seed changes.
+
+2. **Prepared bundle cache** — stores the final split + preprocessed
+   arrays, keyed by seed + ratios.  Allows instant resumption of
+   training for a specific seed without re-splitting or
+   re-preprocessing.
 """
 
 from __future__ import annotations
@@ -152,4 +160,89 @@ def load_prepared_bundle(cache_dir: Path, expected_spec: DatasetSpec) -> Dataset
         return bundle
     except Exception as e:
         log.warning("Failed to load modular bundle from %s: %s", cache_dir, e)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Raw data cache (seed-independent)
+# ---------------------------------------------------------------------------
+
+def get_raw_cache_dir(
+    data_root: str | Path,
+    dataset_name: str,
+    spec: DatasetSpec,
+) -> Path:
+    """Generate a unique directory path for raw (un-split) data.
+
+    The key does **not** include the seed, so the same raw cache is
+    reused across all seeds for a given dataset configuration.
+    """
+    root = Path(data_root) / dataset_name / "raw"
+    params = f"D{spec.input_dim}"
+    if spec.max_samples is not None:
+        params += f"_M{spec.max_samples}"
+    return root / params
+
+
+def save_raw_data(
+    cache_dir: Path,
+    sequences: np.ndarray,
+    labels: np.ndarray,
+    spec: DatasetSpec,
+) -> None:
+    """Save raw (un-split) sequences + labels to disk.
+
+    This is called once after the initial download/extraction from
+    HuggingFace.  Subsequent seeds load from this cache instead of
+    re-downloading.
+    """
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            cache_dir / "raw.npz",
+            sequences=sequences,
+            labels=labels,
+        )
+        spec_dict = {
+            "name": spec.name,
+            "input_dim": spec.input_dim,
+            "num_classes": spec.num_classes,
+        }
+        with open(cache_dir / "raw_spec.json", "w") as f:
+            json.dump(spec_dict, f, indent=2)
+        log.info("Saved raw data cache to: %s", cache_dir)
+    except Exception as e:
+        log.warning("Failed to save raw data cache: %s", e)
+
+
+def load_raw_data(
+    cache_dir: Path,
+    expected_spec: DatasetSpec,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Load raw (un-split) sequences + labels from disk.
+
+    Returns ``(sequences, labels)`` if a valid cache exists, or ``None``
+    if the cache is missing or has mismatched dimensions.
+    """
+    npz_path = cache_dir / "raw.npz"
+    if not npz_path.exists():
+        return None
+
+    try:
+        # Verify spec
+        spec_path = cache_dir / "raw_spec.json"
+        if spec_path.exists():
+            with open(spec_path, "r") as f:
+                cached = json.load(f)
+            if cached.get("input_dim") != expected_spec.input_dim:
+                log.warning("Raw cache spec mismatch in %s. Re-extracting.", cache_dir.name)
+                return None
+
+        data = np.load(npz_path)
+        sequences = data["sequences"]
+        labels = data["labels"]
+        log.info("Loaded raw data cache from: %s", cache_dir.name)
+        return sequences, labels
+    except Exception as e:
+        log.warning("Failed to load raw data cache from %s: %s", cache_dir, e)
         return None

@@ -35,7 +35,7 @@ from synapse.arch.training.utils.callbacks import EMACallback
 from synapse.synapse_arch.unified import Z3UnifiedModel
 
 from .lightning_module import BaselineLightningModule
-from .progress import EpochTqdmProgressBar
+from .progress import EpochOnlyProgressBar
 from ..core.config import Z3ExperimentConfig
 
 log = logging.getLogger(__name__)
@@ -168,7 +168,7 @@ def train_backbone(
             precision = "16-mixed"
 
     # Clean tqdm progress bar — metrics only at epoch transitions
-    callbacks.append(EpochTqdmProgressBar())
+    callbacks.append(EpochOnlyProgressBar())
 
     trainer = pl.Trainer(
         max_epochs=config.training.max_epochs,

@@ -107,6 +107,7 @@ def _build_dataloaders(
     cfg.data.val_size = dataset_spec.val_size
     cfg.data.test_size = dataset_spec.test_size
     cfg.data.noise_std = dataset_spec.noise_std
+    cfg.data.data_root = dataset_spec.data_root
 
     cfg.training = _Cfg()
     cfg.training.batch_size = dataset_spec.batch_size_override or config.training.batch_size

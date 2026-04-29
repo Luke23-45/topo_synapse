@@ -121,6 +121,7 @@ class Z3DatasetSpec:
     noise_std: float = 0.03
     batch_size_override: Optional[int] = None
     max_episodes: Optional[int] = None
+    data_root: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +251,7 @@ class Z3ExperimentConfig:
     ))
     output_dir: str = "outputs/baselines"
     experiment_name: str = "z3_baseline_study"
+    data_root: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Derived configs
@@ -280,6 +282,7 @@ class Z3ExperimentConfig:
                 datasets=self.datasets,
                 output_dir=self.output_dir,
                 experiment_name=self.experiment_name,
+                data_root=self.data_root,
             )
 
         # Deep-merge overlay into the current config's dict representation.
@@ -331,6 +334,7 @@ class Z3ExperimentConfig:
             datasets=(dataset_spec,),
             output_dir=self.output_dir,
             experiment_name=self.experiment_name,
+            data_root=self.data_root,
         )
 
     def for_seed(self, seed: int) -> Z3ExperimentConfig:
@@ -346,6 +350,7 @@ class Z3ExperimentConfig:
             datasets=self.datasets,
             output_dir=self.output_dir,
             experiment_name=self.experiment_name,
+            data_root=self.data_root,
         )
 
     @property
@@ -468,11 +473,18 @@ def _config_from_dict(raw: dict) -> Z3ExperimentConfig:
     rollout = _pop_nested(raw, "rollout", RolloutParams)
 
     # Parse datasets list
+    data_root = raw.pop("data_root", None)
     datasets_raw = raw.pop("datasets", None)
     if datasets_raw is not None:
-        datasets = tuple(Z3DatasetSpec(**ds) for ds in datasets_raw)
+        # Inject global data_root into each dataset spec if not overridden
+        ds_list = []
+        for ds in datasets_raw:
+            if data_root is not None and "data_root" not in ds:
+                ds["data_root"] = data_root
+            ds_list.append(Z3DatasetSpec(**ds))
+        datasets = tuple(ds_list)
     else:
-        datasets = (Z3DatasetSpec(),)
+        datasets = (Z3DatasetSpec(data_root=data_root),)
 
     if raw:
         warnings.warn(f"Unrecognized config fields ignored: {list(raw.keys())}")
@@ -488,6 +500,7 @@ def _config_from_dict(raw: dict) -> Z3ExperimentConfig:
         datasets=datasets,
         output_dir=output_dir,
         experiment_name=experiment_name,
+        data_root=data_root,
     )
 
 
