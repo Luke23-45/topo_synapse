@@ -1,15 +1,16 @@
 """
-Z4 History-Aware Anchor Router Ablation Study
+Z4 Dense Router Ablation Study
 
-Compares the new Z4 learned router against the Z3 baselines:
-1. Z3 Saliency selection (SoftSelectorProxy — current encoder)
-2. Z3 Uniform selection (evenly spaced — best Z3 baseline)
-3. Z4 History-Aware Router (L=1, single-stage)
-4. Z4 History-Aware Router (L=2, two-stage with memory)
+Compares the active Z4 learned router against preserved Z3 baselines:
+1. Z3 saliency selection (legacy SoftSelectorProxy)
+2. Z3 uniform selection (evenly spaced)
+3. Z4 dense router (L=1, single-stage)
+4. Z4 dense router (L=2, two-stage with memory)
 
-All variants produce the same number of tokens [B, K, d_model], so the
-downstream transformer sees identical input shapes.  This isolates the
-effect of *how* anchors are selected.
+The active Z4 path emits [B, L, d_model] stage tokens, while the Z3
+baselines emit [B, K_eff, d_model] retained-point tokens. The ablation
+therefore compares selection/routing strategies under the same downstream
+topology backbone, not identical token counts.
 
 Design choices:
 - K values: 8 and 32 (from anchor count ablation)
@@ -41,7 +42,7 @@ from synapse.synapse_core.event import CausalEventModel
 from synapse.synapse_core.lift import dense_anchor_vectors
 from synapse.synapse_arch.normalized_lift import NormalizedLift
 from synapse.synapse_core.topology_features import structural_feature_dim
-from synapse.common.encoders.topological_encoder import SoftSelectorProxy
+from synapse.common.encoders.legacy.z3_topological_encoder import SoftSelectorProxy
 from synapse.common.encoders.z4_topological_encoder import Z4TopologicalEncoder
 
 # ============================================================
@@ -380,13 +381,7 @@ def train_model(model, name, train_loader, val_loader, test_loader,
                 # First forward without feedback to get initial logits
                 logits, y_star = model(batch_x, feedback=None)
                 cls_loss = criterion(logits, batch_y)
-                # Regularization: encourage sparse, spread-out selection
-                reg_loss = lambda_reg * (
-                    # Budget regularization: penalize over-selection
-                    (y_star.sum(dim=1) - model.encoder.K).pow(2).mean()
-                    # Entropy regularization: encourage peaked selection
-                    + 0.1 * (y_star * (y_star + 1e-6).log()).sum(dim=1).mean()
-                )
+                reg_loss = _routing_regularization(model.encoder, y_star, lambda_reg)
                 # Feedback signal for router memory
                 feedback = torch.stack([
                     -lambda_task * cls_loss.detach(),
@@ -397,18 +392,12 @@ def train_model(model, name, train_loader, val_loader, test_loader,
                 optimizer.zero_grad()
                 logits, y_star = model(batch_x, feedback=feedback)
                 cls_loss = criterion(logits, batch_y)
-                reg_loss = lambda_reg * (
-                    (y_star.sum(dim=1) - model.encoder.K).pow(2).mean()
-                    + 0.1 * (y_star * (y_star + 1e-6).log()).sum(dim=1).mean()
-                )
+                reg_loss = _routing_regularization(model.encoder, y_star, lambda_reg)
                 loss = cls_loss + reg_loss
             else:
                 logits, y_star = model(batch_x)
                 cls_loss = criterion(logits, batch_y)
-                reg_loss = lambda_reg * (
-                    (y_star.sum(dim=1) - model.encoder.K).pow(2).mean()
-                    + 0.1 * (y_star * (y_star + 1e-6).log()).sum(dim=1).mean()
-                )
+                reg_loss = _routing_regularization(model.encoder, y_star, lambda_reg)
                 loss = cls_loss + reg_loss
 
             loss.backward()
@@ -494,6 +483,20 @@ def train_model(model, name, train_loader, val_loader, test_loader,
         'best_val_loss': best_val_loss,
         'time_s': elapsed,
     }
+
+
+def _routing_regularization(encoder, y_star, lambda_reg):
+    eps = 1e-6
+    entropy = -(y_star.clamp_min(eps) * y_star.clamp_min(eps).log()).sum(dim=1).mean()
+
+    # Active Z4 uses dense softmax routing; every stage already sums to 1,
+    # so legacy K-budget penalties are mathematically invalid here.
+    if hasattr(encoder, "z4_encoder"):
+        return lambda_reg * entropy
+
+    target_budget = float(min(getattr(encoder, "K", y_star.shape[1]), y_star.shape[1]))
+    budget_penalty = (y_star.sum(dim=1) - target_budget).pow(2).mean()
+    return lambda_reg * (budget_penalty + 0.1 * entropy)
 
 
 # ============================================================

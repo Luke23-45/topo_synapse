@@ -1,6 +1,6 @@
-"""Synapse LightningModule — Z3 Topology-First training wrapper.
+"""Synapse LightningModule — active topology-first training wrapper.
 
-Encapsulates the Z3TopologyFirstModel, loss computation, optimizer
+Encapsulates the active TopologyFirstModel, loss computation, optimizer
 configuration, and metric logging in a single LightningModule so the
 entire training lifecycle (forward, backward, schedulers, checkpointing,
 mixed-precision, gradient clipping, EMA) is managed by the Lightning
@@ -26,7 +26,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 
 from synapse.synapse_arch.config import SynapseConfig
-from synapse.synapse_arch.model import Z3TopologyFirstModel
+from synapse.synapse_arch.model import TopologyFirstModel
 from synapse.arch.losses.combined_loss import LossConfig, compute_loss
 
 log = logging.getLogger(__name__)
@@ -59,12 +59,12 @@ def _cosine_warmup_scheduler(
 # ---------------------------------------------------------------------------
 
 class SynapseLightningModule(pl.LightningModule):
-    """LightningModule wrapping Z3TopologyFirstModel for training.
+    """LightningModule wrapping the active topology-first model for training.
 
     Parameters
     ----------
-    model : Z3TopologyFirstModel
-        The instantiated Z3 model (with normalization already set).
+    model : TopologyFirstModel
+        The instantiated active model (with normalization already set).
     config : SynapseConfig
         Architecture config (used for LR, weight decay, etc.).
     loss_config : LossConfig
@@ -81,7 +81,7 @@ class SynapseLightningModule(pl.LightningModule):
 
     def __init__(
         self,
-        model: Z3TopologyFirstModel,
+        model: TopologyFirstModel,
         config: SynapseConfig,
         loss_config: LossConfig | None = None,
         lr: float = 1e-3,

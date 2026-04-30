@@ -143,8 +143,7 @@ class Z4TopologicalEncoder(nn.Module):
         tokens : Tensor  [B, L, d_model]
             Encoded anchor tokens.
         y_star : Tensor  [B, T]
-            Aggregated anchor weights (sum over routing stages,
-            needed for auxiliary losses).
+            Mean routing weights aggregated across stages.
         all_y : Tensor  [B, L, T]
             Per-stage selection weights.
         all_memory : Tensor  [B, L+1, d_m]
@@ -155,8 +154,8 @@ class Z4TopologicalEncoder(nn.Module):
             x, feedback=feedback, mask=mask, hard=False
         )
 
-        # Aggregate selection weights across stages for downstream use
-        y_star = all_y.sum(dim=1)  # [B, T]
+        # Aggregate routing weights across stages without changing total mass.
+        y_star = all_y.mean(dim=1)  # [B, T]
 
         # Stage 2: Build structure-aware dense vectors for the lift
         dense_vectors = build_structural_feature_tensor(

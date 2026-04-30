@@ -10,7 +10,7 @@ Key components
 --------------
 - ``CandidateEncoder``     : embeds raw input into candidate tokens u_i
 - ``AnchorScorer``         : computes anchor scores with positional + coverage bias
-- ``DifferentiableSelector``: soft budgeted selection with diversity control
+- ``DifferentiableSelector``: dense routing weights with diversity control
 - ``SelectionStatistics``   : computes coverage, entropy, spacing, compactness
 - ``HistoryAwareAnchorRouter``: full router with GRU memory update
 """
@@ -203,14 +203,11 @@ class AnchorScorer(nn.Module):
 
 
 class DifferentiableSelector(nn.Module):
-    """Soft budgeted selection with feature-space diversity control.
+    """Dense routing weights with feature-space diversity control.
 
-    S_{K,r,τ}(a) produces continuous weights y ∈ [0,1]^T that:
-    - approximately select K positions,
-    - enforce a refractory separation of at least r between selected positions,
-    - are differentiable w.r.t. the scores a.
-
-    The Z4 path uses the same soft routing rule during training and inference.
+    Produces a normalized distribution y over all input positions for each
+    routing stage. This is not anchor selection: every valid input can
+    contribute to the stage token through its routing mass.
     """
 
     def __init__(
@@ -245,30 +242,27 @@ class DifferentiableSelector(nn.Module):
         Returns
         -------
         y : Tensor  [B, T]
-            Selection weights in [0, 1].
+            Dense routing weights summing to 1 over valid positions.
         """
-        B, T = scores.shape
         temp = self.log_temperature.exp().clamp(min=0.1, max=10.0)
 
-        # Soft relaxed selection via sigmoid with temperature
+        # Dense softmax routing with learned temperature
         logits = scores / temp
-        y = torch.sigmoid(logits)
-
         if mask is not None:
-            y = y * mask.to(dtype=y.dtype)
+            invalid = mask <= 0
+            logits = logits.masked_fill(invalid, float("-inf"))
 
-        # Soft budget constraint: scale down if sum exceeds K
-        budget = y.sum(dim=1, keepdim=True).clamp(min=1e-6)
-        scale = torch.clamp(self.K / budget, max=1.0)
-        y = y * scale
+        y = torch.softmax(logits, dim=1)
 
         # Diversity constraint in feature space rather than index space.
         if similarity is not None and self.r > 0:
             for _ in range(self.r):
                 overlap = torch.bmm(similarity, y.unsqueeze(-1)).squeeze(-1)
-                y = y / (1.0 + overlap)
-                budget = y.sum(dim=1, keepdim=True).clamp(min=1e-6)
-                y = y * torch.clamp(self.K / budget, max=1.0)
+                penalty = overlap / overlap.amax(dim=1, keepdim=True).clamp_min(1e-6)
+                logits = logits - penalty
+                if mask is not None:
+                    logits = logits.masked_fill(mask <= 0, float("-inf"))
+                y = torch.softmax(logits, dim=1)
 
         return y
 

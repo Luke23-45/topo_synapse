@@ -20,14 +20,14 @@ import torch
 
 from synapse.dataset.adapters.base import DatasetBundle
 from synapse.synapse_arch.config import SynapseConfig
-from synapse.synapse_arch.model import Z3TopologyFirstModel
-from synapse.synapse_arch.unified import Z3UnifiedModel
+from synapse.synapse_arch.model import TopologyFirstModel
+from synapse.synapse_arch.unified import UnifiedModel
 
 log = logging.getLogger(__name__)
 
 
-def build_model_from_cfg(cfg, bundle: DatasetBundle | None = None) -> Z3TopologyFirstModel:
-    """Construct a Z3TopologyFirstModel from config and optional bundle spec.
+def build_model_from_cfg(cfg, bundle: DatasetBundle | None = None) -> TopologyFirstModel:
+    """Construct the active topology-first model from config and bundle spec.
 
     When a ``DatasetBundle`` is provided, its spec is used to derive
     the correct ``input_dim``, ``output_dim``, and
@@ -58,7 +58,7 @@ def build_model_from_cfg(cfg, bundle: DatasetBundle | None = None) -> Z3Topology
     )
     if bundle is not None:
         base_cfg = base_cfg.for_dataset(bundle.spec)
-    return Z3TopologyFirstModel(base_cfg)
+    return TopologyFirstModel(base_cfg)
 
 
 def resolve_normalization(bundle: DatasetBundle) -> dict[str, np.ndarray]:
@@ -71,8 +71,8 @@ def resolve_normalization(bundle: DatasetBundle) -> dict[str, np.ndarray]:
 def build_unified_model_from_cfg(
     cfg,
     bundle: DatasetBundle | None = None,
-) -> Z3UnifiedModel:
-    """Construct a Z3UnifiedModel from config and optional bundle spec.
+) -> UnifiedModel:
+    """Construct the active unified model from config and optional bundle spec.
 
     Supports backbone switching via ``cfg.model.backbone_type``.
     When a ``DatasetBundle`` is provided, its spec is used to derive
@@ -94,7 +94,7 @@ def build_unified_model_from_cfg(
         num_tokens = bundle.spec.sequence_length
         modality = bundle.spec.modality
 
-    model = Z3UnifiedModel(
+    model = UnifiedModel(
         backbone_type=backbone_type,
         modality=modality,
         input_dim=input_dim,
@@ -115,7 +115,7 @@ def build_unified_model_from_cfg(
     )
 
     log.info(
-        "Built Z3UnifiedModel: backbone=%s, modality=%s, params=%d",
+        "Built UnifiedModel: backbone=%s, modality=%s, params=%d",
         backbone_type, modality, model.num_parameters,
     )
     return model

@@ -1,4 +1,4 @@
-"""Modality-specific encoders for the Z3/Z4 unified model.
+"""Modality-specific encoders for the active unified model.
 
 Each encoder normalizes a specific data modality into a common
 ``[B, N, d_model]`` token format that any backbone can consume.
@@ -8,8 +8,8 @@ Encoders
 - ``TemporalEncoder``       : 1-D time-series → tokens
 - ``GeometricEncoder``     : 3-D point clouds → tokens
 - ``ScientificEncoder``    : 2-D grid/field data → tokens
-- ``TopologicalEncoder``   : Deep Hodge preprocessing (event + lift) → tokens
-- ``Z4TopologicalEncoder`` : History-aware anchor routing + lift → tokens
+- ``TopologicalEncoder``   : Active Z4 topology encoder entry point
+- ``Z4TopologicalEncoder`` : History-aware dense routing + lift → tokens
 """
 
 from .temporal import TemporalEncoder
@@ -18,6 +18,7 @@ from .scientific import ScientificEncoder
 from .topological_encoder import TopologicalEncoder
 from .z4_topological_encoder import Z4TopologicalEncoder
 from .history_aware_router import HistoryAwareAnchorRouter
+from .legacy import LegacyZ3TopologicalEncoder
 
 _ENCODER_REGISTRY = {
     "temporal": TemporalEncoder,
@@ -57,6 +58,7 @@ __all__ = [
     "ScientificEncoder",
     "TopologicalEncoder",
     "Z4TopologicalEncoder",
+    "LegacyZ3TopologicalEncoder",
     "HistoryAwareAnchorRouter",
     "create_encoder",
 ]

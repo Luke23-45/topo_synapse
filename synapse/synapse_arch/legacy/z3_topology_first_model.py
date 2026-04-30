@@ -1,4 +1,4 @@
-"""Active topology-first model built on the Z4 encoder path."""
+"""Legacy Z3 topology-first model preserved under the legacy namespace."""
 
 from __future__ import annotations
 
@@ -10,13 +10,15 @@ from torch import nn
 
 from synapse.common.types import ProxyComputation
 from synapse.synapse_core.audit import compute_exact_topology_audit
+from synapse.synapse_core.event import CausalEventModel
 from synapse.synapse_core.lift import normalize_anchors
-from synapse.common.encoders.z4_topological_encoder import Z4TopologicalEncoder
 from synapse.synapse_core.proxy import DifferentiableHodgeProxy
-from synapse.synapse_core.topology_features import build_structural_feature_tensor
+from synapse.synapse_core.selection import solve_relaxed_selector
+from synapse.synapse_core.topology_features import build_structural_feature_tensor, structural_feature_dim
 
-from .config import SynapseConfig
-from .deep_hodge import DeepHodgeTransformer
+from ..config import SynapseConfig
+from ..deep_hodge import DeepHodgeTransformer
+from ..normalized_lift import NormalizedLift
 
 
 @dataclass
@@ -30,27 +32,15 @@ class ModelForwardOutput:
     dense_lifted_cloud: torch.Tensor
 
 
-class TopologyFirstModel(nn.Module):
-    """Active topology-first model using dense Z4 routing."""
+class Z3TopologyFirstModel(nn.Module):
+    """Legacy Z3 topology-first model."""
 
     def __init__(self, config: SynapseConfig) -> None:
         super().__init__()
         self.config = config
-
-        self.encoder = Z4TopologicalEncoder(
-            input_dim=config.input_dim,
-            d_model=config.d_model,
-            hidden_dim=config.hidden_dim,
-            d_u=config.d_model,
-            d_a=max(16, config.d_model // 2),
-            d_m=config.d_model,
-            k=config.k,
-            K=config.K,
-            r=config.r,
-            L=config.max_proxy_points,
-            lam=config.lam,
-            max_proxy_points=config.max_proxy_points,
-        )
+        anchor_dim = structural_feature_dim(config.input_dim, include_selection=False)
+        self.event_model = CausalEventModel(config.input_dim, config.hidden_dim)
+        self.lift = NormalizedLift(anchor_dim, config.k)
 
         if config.topology_mode == "baseline_proxy":
             self.proxy = DifferentiableHodgeProxy(
@@ -69,6 +59,7 @@ class TopologyFirstModel(nn.Module):
                 num_scales=config.num_scales,
                 max_points=config.max_proxy_points,
             )
+            self.topology_proj = nn.Linear(config.k, config.d_model)
         else:
             raise ValueError(f"Unsupported topology_mode: {config.topology_mode}")
 
@@ -85,44 +76,55 @@ class TopologyFirstModel(nn.Module):
     def num_trainable_params(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
-    def set_normalization(self, mu: torch.Tensor, sigma: torch.Tensor) -> None:
-        self.encoder.set_normalization(mu, sigma)
+    def _solve_batch_selector(self, saliency_scores: torch.Tensor) -> torch.Tensor:
+        y_values = []
+        for scores in saliency_scores.detach().cpu().numpy():
+            y_values.append(
+                solve_relaxed_selector(
+                    scores.astype(np.float64),
+                    K=self.config.K,
+                    r=self.config.r,
+                    lam=self.config.lam,
+                )
+            )
+        return torch.from_numpy(np.stack(y_values, axis=0)).to(
+            device=saliency_scores.device,
+            dtype=saliency_scores.dtype,
+        )
 
-    def _compute_dense_lifted_cloud(
-        self,
-        sequence: torch.Tensor,
-        mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def compute_proxy(self, sequence: torch.Tensor, mask: torch.Tensor | None = None) -> ProxyComputation:
+        event_scores, saliency_scores = self.event_model(sequence, mask)
+        y_star = self._solve_batch_selector(saliency_scores)
+
         dense_vectors = build_structural_feature_tensor(
             sequence,
-            mask=mask,
             knn_k=max(1, self.config.r),
             include_selection=False,
         )
-        _, dense_lifted_cloud = self.encoder.lift(dense_vectors)
-        return dense_vectors, dense_lifted_cloud
-
-    def compute_proxy(self, sequence: torch.Tensor, mask: torch.Tensor | None = None) -> ProxyComputation:
-        tokens, y_star, _all_y, _all_memory = self.encoder(sequence, mask=mask)
-        dense_vectors, dense_lifted_cloud = self._compute_dense_lifted_cloud(sequence, mask=mask)
+        _, dense_lifted_cloud = self.lift(dense_vectors)
 
         with torch.autocast(device_type=sequence.device.type, enabled=False):
             if self.config.topology_mode == "baseline_proxy":
                 proxy_features = self.proxy(dense_lifted_cloud, y_star)
             elif self.config.topology_mode == "deep_hodge":
-                out = self.proxy(tokens)
+                _, N, k_dim = dense_lifted_cloud.shape
+                K_eff = min(N, self.config.max_proxy_points)
+                _, top_idx = torch.topk(y_star, K_eff, dim=1)
+                top_idx_exp = top_idx.unsqueeze(-1).expand(-1, -1, k_dim)
+                cloud = torch.gather(dense_lifted_cloud, 1, top_idx_exp)
+                feat = self.topology_proj(cloud)
+                out = self.proxy(feat)
                 proxy_features = out.mean(dim=1)
             else:
                 raise RuntimeError(f"Architecture logic not implemented for {self.config.topology_mode}")
 
-        zeros = torch.zeros_like(y_star)
         return ProxyComputation(
             dense_vectors=dense_vectors,
             dense_lifted_cloud=dense_lifted_cloud,
             y_star=y_star,
             proxy_features=proxy_features,
-            event_scores=zeros,
-            saliency_scores=zeros,
+            event_scores=event_scores,
+            saliency_scores=saliency_scores,
         )
 
     def forward(self, sequence: torch.Tensor, mask: torch.Tensor | None = None) -> ModelForwardOutput:
@@ -140,22 +142,22 @@ class TopologyFirstModel(nn.Module):
         )
 
     def exact_audit(self, sequence: torch.Tensor) -> list:
-        _, y_star, _all_y, _all_memory = self.encoder(sequence)
+        event_scores, saliency_scores = self.event_model(sequence)
+        y_star = self._solve_batch_selector(saliency_scores)
         audits = []
-        zeros = np.zeros(sequence.shape[1], dtype=np.float64)
         for batch_idx in range(sequence.shape[0]):
             audits.append(
                 compute_exact_topology_audit(
                     trajectory=sequence[batch_idx].detach().cpu().numpy().astype(np.float64),
-                    event_scores=zeros,
-                    saliency_scores=zeros,
+                    event_scores=event_scores[batch_idx].detach().cpu().numpy().astype(np.float64),
+                    saliency_scores=saliency_scores[batch_idx].detach().cpu().numpy().astype(np.float64),
                     y_star=y_star[batch_idx].detach().cpu().numpy().astype(np.float64),
-                    W_theta=self.encoder.lift.W_theta.detach().cpu().numpy().astype(np.float64),
+                    W_theta=self.lift.W_theta.detach().cpu().numpy().astype(np.float64),
                     K=self.config.K,
                     r=self.config.r,
                     Q=self.config.Q,
-                    mu=self.encoder.lift.mu.detach().cpu().numpy().astype(np.float64),
-                    sigma=self.encoder.lift.sigma.detach().cpu().numpy().astype(np.float64),
+                    mu=self.lift.mu.detach().cpu().numpy().astype(np.float64),
+                    sigma=self.lift.sigma.detach().cpu().numpy().astype(np.float64),
                 )
             )
         return audits
@@ -168,12 +170,7 @@ class TopologyFirstModel(nn.Module):
         )
         stacked = dense.reshape(-1, dense.shape[-1]).cpu().numpy().astype(np.float64)
         _, mu, sigma = normalize_anchors(stacked)
-        tensor_mu = torch.from_numpy(mu).float()
-        tensor_sigma = torch.from_numpy(sigma).float()
-        self.set_normalization(tensor_mu, tensor_sigma)
-
-
-Z3TopologyFirstModel = TopologyFirstModel
-
-
-__all__ = ["ModelForwardOutput", "TopologyFirstModel", "Z3TopologyFirstModel"]
+        self.lift.set_normalization(
+            torch.from_numpy(mu).float(),
+            torch.from_numpy(sigma).float(),
+        )

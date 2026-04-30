@@ -125,7 +125,7 @@ def train(
     # ------------------------------------------------------------------
     model = build_model_from_cfg(cfg, datamodule.bundle)
     norm = resolve_normalization(datamodule.bundle)
-    model.lift.set_normalization(
+    model.set_normalization(
         torch.from_numpy(norm["mu"]).float(),
         torch.from_numpy(norm["sigma"]).float(),
     )
