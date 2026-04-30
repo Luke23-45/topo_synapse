@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import nn, Tensor
 
 from synapse.synapse_core.event import CausalEventModel
@@ -25,6 +26,54 @@ from synapse.synapse_core.lift import (
 )
 from synapse.synapse_core.selection import solve_relaxed_selector
 from synapse.synapse_arch.normalized_lift import NormalizedLift
+
+
+class SoftSelectorProxy(nn.Module):
+    """Differentiable GPU proxy for the relaxed selector.
+
+    Replaces the per-sample CPU QP solve with a fully GPU-based
+    approximation using sigmoid relaxation of budget + refractory
+    constraints.  Gradients flow through the proxy, enabling
+    end-to-end training without GPU→CPU sync barriers.
+
+    The proxy approximates the QP:
+        minimize  λ Σ y² - Σ s_t y_t
+        s.t.  Σ y_t ≤ K,  y_t + y_u ≤ 1 for |t-u| ≤ r,  0 ≤ y ≤ 1
+    """
+
+    def __init__(self, K: int, r: int, lam: float, init_temperature: float = 1.0):
+        super().__init__()
+        self.K = K
+        self.r = r
+        self.lam = lam
+        self.log_temperature = nn.Parameter(torch.log(torch.tensor(init_temperature)))
+
+    def forward(self, saliency: Tensor) -> Tensor:
+        B, T = saliency.shape
+        temp = self.log_temperature.exp().clamp(min=0.1, max=10.0)
+
+        # Shift logits by saliency so high-saliency positions are preferred
+        logits = (saliency / (2.0 * self.lam) - 0.5) / temp
+        y = torch.sigmoid(logits)
+
+        # Enforce y[:, 0] = 0 (first-step constraint)
+        y = y.clone()
+        y[:, 0] = 0.0
+
+        # Soft budget: scale down if sum exceeds K
+        budget = y.sum(dim=1, keepdim=True).clamp(min=1e-6)
+        scale = torch.clamp(self.K / budget, max=1.0)
+        y = y * scale
+
+        # Soft refractory: for each pair |t-u| ≤ r, dampen overlap
+        for d in range(1, min(self.r + 1, T)):
+            shift = torch.roll(y, shifts=-d, dims=1)
+            pair_sum = y + shift
+            damping = torch.clamp(2.0 / (1.0 + pair_sum), max=1.0)
+            y = y * damping
+
+        y[:, 0] = 0.0
+        return y
 
 
 class TopologicalEncoder(nn.Module):
@@ -79,10 +128,13 @@ class TopologicalEncoder(nn.Module):
         # Stage 1: Event detection + saliency
         self.event_model = CausalEventModel(input_dim, hidden_dim)
 
-        # Stage 2: Geometric lift
+        # Stage 2: Anchor selection (GPU proxy)
+        self.selector_proxy = SoftSelectorProxy(K=K, r=r, lam=lam)
+
+        # Stage 3: Geometric lift
         self.lift = NormalizedLift(anchor_dim, k)
 
-        # Stage 3: Project lifted k-dim to d_model
+        # Stage 4: Project lifted k-dim to d_model
         self.topology_proj = nn.Linear(k, d_model)
 
     def set_normalization(self, mu: Tensor, sigma: Tensor) -> None:
@@ -106,6 +158,10 @@ class TopologicalEncoder(nn.Module):
             dtype=saliency_scores.dtype,
         )
 
+    def _gpu_selector(self, saliency_scores: Tensor) -> Tensor:
+        """Differentiable GPU proxy for anchor selection."""
+        return self.selector_proxy(saliency_scores)
+
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
         """Encode raw sequence into topological anchor tokens.
 
@@ -124,8 +180,8 @@ class TopologicalEncoder(nn.Module):
         # Stage 1: Event detection + saliency
         event_scores, saliency_scores = self.event_model(x)
 
-        # Stage 2: Anchor selection
-        y_star = self._solve_batch_selector(saliency_scores)
+        # Stage 2: Anchor selection (GPU proxy — differentiable, no CPU sync)
+        y_star = self._gpu_selector(saliency_scores)
 
         # Stage 3: Topology-projected lift
         dense_vectors = dense_anchor_vectors(x, saliency_scores)

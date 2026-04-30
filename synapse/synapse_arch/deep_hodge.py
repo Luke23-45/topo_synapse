@@ -66,6 +66,11 @@ class DeepHodgeLayer(nn.Module):
         # Precompute boundary matrices
         self._build_boundary_matrices(max_points)
 
+        # Pre-register identity matrices as buffers (avoids per-forward allocation)
+        num_edges = max_points * (max_points - 1) // 2
+        self.register_buffer("_eye_K", torch.eye(max_points))
+        self.register_buffer("_eye_E", torch.eye(num_edges))
+
     def _build_boundary_matrices(self, K: int) -> None:
         """Precomputes fixed boundary matrices for the complete 2-skeleton."""
         edges = []
@@ -163,9 +168,11 @@ class DeepHodgeLayer(nn.Module):
             W0 = mask # (B, K)
             
             # --- Node Message Passing (0-Simplex) via Δ̂_0 ---
-            W1_diag = torch.diag_embed(W1)
-            L0 = torch.matmul(self.B1, torch.matmul(W1_diag, self.B1.t()))
-            L0 = L0 + self.tau * torch.eye(self.max_points, device=L0.device).unsqueeze(0)
+            # B2: (B1 * W1) @ B1.T avoids materializing the full diagonal matrix
+            B1_scaled = self.B1.unsqueeze(0) * W1.unsqueeze(1)  # (B, K, E)
+            B1_exp = self.B1.unsqueeze(0).expand(B_batch, -1, -1)  # (B, K, E)
+            L0 = torch.bmm(B1_scaled, B1_exp.transpose(1, 2))  # (B, K, K)
+            L0 = L0 + self.tau * self._eye_K.unsqueeze(0)  # B4: buffer
             
             # Diffusion: Apply L0 to V0. Note: Since L0 is a Laplacian, we actually want
             # (I - L0) or simply L0 directly to route features based on connectivity.
@@ -176,14 +183,17 @@ class DeepHodgeLayer(nn.Module):
             node_updates.append(M0)
             
             # --- Edge Message Passing (1-Simplex) via Δ̂_1 ---
-            W0_diag = torch.diag_embed(W0)
-            W2_diag = torch.diag_embed(W2)
-            term_down = torch.matmul(self.B1.t(), torch.matmul(W0_diag, self.B1))
-            term_up = torch.matmul(self.B2, torch.matmul(W2_diag, self.B2.t()))
-            
-            num_edges = self.B1.shape[1]
+            # B2: element-wise scaling for both terms
+            BT_scaled = self.B1.t().unsqueeze(0) * W0.unsqueeze(1)  # (B, E, K)
+            B1_exp = self.B1.unsqueeze(0).expand(B_batch, -1, -1)  # (B, K, E)
+            term_down = torch.bmm(BT_scaled, B1_exp)  # (B, E, E)
+
+            B2_scaled = self.B2.unsqueeze(0) * W2.unsqueeze(1)  # (B, E, T)
+            B2_exp = self.B2.t().unsqueeze(0).expand(B_batch, -1, -1)  # (B, T, E)
+            term_up = torch.bmm(B2_scaled, B2_exp)  # (B, E, E)
+
             L1 = term_down + term_up
-            L1 = L1 + self.tau * torch.eye(num_edges, device=L1.device).unsqueeze(0)
+            L1 = L1 + self.tau * self._eye_E.unsqueeze(0)  # B4: buffer
             
             # Route edge features through adjacent edges/triangles
             E_in_s = E_in[:, :, s_idx, :]

@@ -76,6 +76,11 @@ class DifferentiableHodgeProxy(nn.Module):
         # Precompute combinatorial boundary matrices for the complete 2-skeleton
         self._build_boundary_matrices(max_points)
 
+        # Pre-register identity matrices as buffers (avoids per-forward allocation)
+        num_edges = max_points * (max_points - 1) // 2
+        self.register_buffer("_eye_K", torch.eye(max_points))
+        self.register_buffer("_eye_E", torch.eye(num_edges))
+
     def _build_boundary_matrices(self, K: int) -> None:
         """Precompute B1 (vertex→edge) and B2 (edge→triangle) incidence matrices.
 
@@ -202,19 +207,25 @@ class DifferentiableHodgeProxy(nn.Module):
             W2 = W1[:, self.t_idx_ij] * W1[:, self.t_idx_jk] * W1[:, self.t_idx_ik]  # (B, T)
 
             # ── Δ̂_0 = B1 · diag(W1) · B1^T + τI ──
-            W1_diag = torch.diag_embed(W1)                 # (B, E, E)
-            L0 = torch.matmul(self.B1, torch.matmul(W1_diag, self.B1.t()))
-            L0 = L0 + self.tau * torch.eye(self.max_points, device=L0.device).unsqueeze(0)
+            # Element-wise scaling: (B1 * W1) @ B1.T avoids materializing the diagonal
+            B1_scaled = self.B1.unsqueeze(0) * W1.unsqueeze(1)  # (B, K, E)
+            B1_exp = self.B1.unsqueeze(0).expand(B_batch, -1, -1)  # (B, K, E)
+            L0 = torch.bmm(B1_scaled, B1_exp.transpose(1, 2))  # (B, K, K)
+            L0 = L0 + self.tau * self._eye_K.unsqueeze(0)
             eigvals_L0 = torch.linalg.eigvalsh(L0)         # (B, K)
 
             # ── Δ̂_1 = B1^T · diag(W0) · B1 + B2 · diag(W2) · B2^T + τI ──
-            W0_diag = torch.diag_embed(W0)                 # (B, K, K)
-            W2_diag = torch.diag_embed(W2)                 # (B, T, T)
-            term_down = torch.matmul(self.B1.t(), torch.matmul(W0_diag, self.B1))
-            term_up = torch.matmul(self.B2, torch.matmul(W2_diag, self.B2.t()))
-            num_edges = self.B1.shape[1]
+            # Element-wise scaling for both terms
+            BT_scaled = self.B1.t().unsqueeze(0) * W0.unsqueeze(1)  # (B, E, K)
+            B1_exp = self.B1.unsqueeze(0).expand(B_batch, -1, -1)  # (B, K, E)
+            term_down = torch.bmm(BT_scaled, B1_exp)  # (B, E, E)
+
+            B2_scaled = self.B2.unsqueeze(0) * W2.unsqueeze(1)  # (B, E, T)
+            B2_exp = self.B2.t().unsqueeze(0).expand(B_batch, -1, -1)  # (B, T, E)
+            term_up = torch.bmm(B2_scaled, B2_exp)  # (B, E, E)
+
             L1 = term_down + term_up
-            L1 = L1 + self.tau * torch.eye(num_edges, device=L1.device).unsqueeze(0)
+            L1 = L1 + self.tau * self._eye_E.unsqueeze(0)
             eigvals_L1 = torch.linalg.eigvalsh(L1)         # (B, E)
 
             # Retain first J eigenvalues from each, padding if needed

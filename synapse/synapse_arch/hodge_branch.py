@@ -61,6 +61,11 @@ class HodgeTopologyBranch(nn.Module):
         # Precompute Combinatorial Boundary Matrices for the Simplicial Complex
         self._build_boundaries(self.MAX_K)
 
+        # Pre-register identity matrices as buffers (avoids per-forward allocation)
+        num_edges = self.MAX_K * (self.MAX_K - 1) // 2
+        self.register_buffer("_eye_K", torch.eye(self.MAX_K))
+        self.register_buffer("_eye_E", torch.eye(num_edges))
+
     def _build_boundaries(self, K: int) -> None:
         """Precomputes B1 (Vertices to Edges) and B2 (Edges to Triangles) operators."""
         edges = []
@@ -202,21 +207,25 @@ class HodgeTopologyBranch(nn.Module):
             W2 = W1[:, self.t_idx_ij] * W1[:, self.t_idx_jk] * W1[:, self.t_idx_ik]
             
             # Form L0 = B1 W1 B1^T
-            # B1 is (K, E). W1 is (B, E).
-            W1_diag = torch.diag_embed(W1)
-            L0 = torch.matmul(self.B1, torch.matmul(W1_diag, self.B1.t()))
-            L0 = L0 + torch.eye(self.MAX_K, device=L0.device).unsqueeze(0) * 1e-6
+            # Element-wise scaling: (B1 * W1) @ B1.T avoids materializing the diagonal
+            B1_scaled = self.B1.unsqueeze(0) * W1.unsqueeze(1)  # (B, K, E)
+            B1_exp = self.B1.unsqueeze(0).expand(B_batch, -1, -1)  # (B, K, E)
+            L0 = torch.bmm(B1_scaled, B1_exp.transpose(1, 2))  # (B, K, K)
+            L0 = L0 + self._eye_K.unsqueeze(0) * 1e-6
             eigvals_L0 = torch.linalg.eigvalsh(L0)
             
             # Form L1 = B1^T W0 B1 + B2 W2 B2^T
-            # B1^T is (E, K), W0 is (B, K). B2 is (E, T), W2 is (B, T).
-            W0_diag = torch.diag_embed(W0)
-            W2_diag = torch.diag_embed(W2)
-            
-            term1 = torch.matmul(self.B1.t(), torch.matmul(W0_diag, self.B1))
-            term2 = torch.matmul(self.B2, torch.matmul(W2_diag, self.B2.t()))
+            # Element-wise scaling for both terms
+            BT_scaled = self.B1.t().unsqueeze(0) * W0.unsqueeze(1)  # (B, E, K)
+            B1_exp = self.B1.unsqueeze(0).expand(B_batch, -1, -1)  # (B, K, E)
+            term1 = torch.bmm(BT_scaled, B1_exp)  # (B, E, E)
+
+            B2_scaled = self.B2.unsqueeze(0) * W2.unsqueeze(1)  # (B, E, T)
+            B2_exp = self.B2.t().unsqueeze(0).expand(B_batch, -1, -1)  # (B, T, E)
+            term2 = torch.bmm(B2_scaled, B2_exp)  # (B, E, E)
+
             L1 = term1 + term2
-            L1 = L1 + torch.eye(len(self.e_idx_i), device=L1.device).unsqueeze(0) * 1e-6
+            L1 = L1 + self._eye_E.unsqueeze(0) * 1e-6
             eigvals_L1 = torch.linalg.eigvalsh(L1)
             
             features.append(eigvals_L0[:, :num_eigvals])
