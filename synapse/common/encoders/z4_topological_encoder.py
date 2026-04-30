@@ -26,6 +26,7 @@ from torch import Tensor
 
 from .history_aware_router import HistoryAwareAnchorRouter
 from ...synapse_core.topology_features import (
+    build_static_structural_features,
     build_structural_feature_tensor,
     structural_feature_dim,
 )
@@ -150,7 +151,7 @@ class Z4TopologicalEncoder(nn.Module):
             Memory states across routing stages.
         """
         # Stage 1: Router — learned anchor selection
-        all_y, all_z, all_memory, all_anchors = self.router(
+        all_y, all_z, all_memory, all_anchors, geometry_cache = self.router(
             x, feedback=feedback, mask=mask, hard=False
         )
 
@@ -158,11 +159,12 @@ class Z4TopologicalEncoder(nn.Module):
         y_star = all_y.mean(dim=1)  # [B, T]
 
         # Stage 2: Build structure-aware dense vectors for the lift
-        dense_vectors = build_structural_feature_tensor(
+        # Reuse geometry_cache from the router to avoid redundant computation.
+        dense_vectors = build_static_structural_features(
             x,
             mask=mask,
             knn_k=max(1, self.r),
-            include_selection=False,
+            geometry_cache=geometry_cache,
         )
         _, dense_lifted_cloud = self.lift(dense_vectors)  # [B, T, k]
 

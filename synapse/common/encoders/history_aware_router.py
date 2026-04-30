@@ -26,8 +26,10 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from ...synapse_core.topology_features import (
+    append_selection_weight,
     build_feature_similarity,
     build_router_context,
+    build_static_structural_features,
     build_structural_feature_tensor,
     precompute_structural_geometry,
     router_context_dim,
@@ -70,11 +72,16 @@ class CandidateEncoder(nn.Module):
         geometry_cache: Optional[dict[str, Tensor]] = None,
         context: Optional[Tensor] = None,
         similarity: Optional[Tensor] = None,
+        static_features: Optional[Tensor] = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """
         Parameters
         ----------
         x : Tensor  [B, T, input_dim]
+        static_features : Tensor | None  [B, T, d_static]
+            Pre-built static features (without selection).  If provided,
+            only the cheap ``append_selection_weight`` is called instead
+            of the full ``build_structural_feature_tensor``.
 
         Returns
         -------
@@ -82,25 +89,31 @@ class CandidateEncoder(nn.Module):
         structural_features : Tensor [B, T, d_f]
         similarity : Tensor [B, T, T]
         """
-        structural_features = build_structural_feature_tensor(
-            x,
-            selection_weights=selection_weights,
-            mask=mask,
-            knn_k=self.knn_k,
-            geometry_cache=geometry_cache,
-        )
+        if static_features is not None:
+            structural_features = append_selection_weight(static_features, selection_weights)
+        else:
+            structural_features = build_structural_feature_tensor(
+                x,
+                selection_weights=selection_weights,
+                mask=mask,
+                knn_k=self.knn_k,
+                geometry_cache=geometry_cache,
+            )
         if context is None:
             context = build_router_context(x, mask=mask, geometry_cache=geometry_cache)
         u = self.project(structural_features, context)
         if similarity is None:
-            static_features = build_structural_feature_tensor(
-                x,
-                mask=mask,
-                knn_k=self.knn_k,
-                geometry_cache=geometry_cache,
-                include_selection=False,
-            )
-            similarity = build_feature_similarity(static_features, mask=mask)
+            if static_features is not None:
+                similarity = build_feature_similarity(static_features, mask=mask)
+            else:
+                sf = build_structural_feature_tensor(
+                    x,
+                    mask=mask,
+                    knn_k=self.knn_k,
+                    geometry_cache=geometry_cache,
+                    include_selection=False,
+                )
+                similarity = build_feature_similarity(sf, mask=mask)
         return u, structural_features, similarity, context
 
 
@@ -330,24 +343,32 @@ class SelectionStatistics(nn.Module):
         return spread
 
     def _compute_compactness(self, y: Tensor, u: Tensor) -> Tensor:
-        """Compute weighted average pairwise distance (compactness).
+        """Compute weighted average pairwise squared distance (compactness).
 
-        Compactness(u, y) = Σ_{i,j} y_i y_j ||u_i - u_j|| / (Σ y_i)^2
+        Uses the parallel-axis identity to avoid O(T²d_u) pairwise
+        materialisation:
+
+            Σ_{i,j} y_i y_j ||u_i - u_j||²
+                = 2 (Σy · Σ_i y_i ||u_i||² − ||Σ_i y_i u_i||²)
+
+        Output is divided by (Σ y_i)² so the statistic is scale-invariant
+        w.r.t. the selection weights.  Squared distances are used instead
+        of L2 for numerical stability and because the statistic only feeds
+        a GRU — the exact norm flavour is not critical.
         """
-        B, T, d_u = u.shape
-
-        # Pairwise distances: ||u_i - u_j||
-        # u: [B, T, d_u] → diff: [B, T, T, d_u]
-        diff = u.unsqueeze(2) - u.unsqueeze(1)  # [B, T, T, d_u]
-        dist = ((diff ** 2).sum(dim=-1) + self.eps).sqrt()  # [B, T, T]
-
-        # Weight by y_i * y_j
-        y_outer = y.unsqueeze(1) * y.unsqueeze(2)  # [B, T, T]
-        weighted_dist = (y_outer * dist).sum(dim=(1, 2))  # [B]
-
         total_weight = y.sum(dim=1).clamp(min=self.eps)  # [B]
-        compactness = weighted_dist / total_weight.pow(2).clamp(min=self.eps)  # [B]
 
+        # Weighted sum of squared norms: Σ_i y_i ||u_i||²   →  [B]
+        weighted_sq_norm = (y * u.pow(2).sum(dim=-1)).sum(dim=1)
+
+        # Weighted centroid norm: ||Σ_i y_i u_i||²   →  [B]
+        centroid = torch.bmm(y.unsqueeze(1), u).squeeze(1)  # [B, d_u]
+        centroid_sq_norm = centroid.pow(2).sum(dim=1)  # [B]
+
+        # Parallel-axis identity
+        weighted_dist_sq = 2.0 * (total_weight * weighted_sq_norm - centroid_sq_norm)
+
+        compactness = weighted_dist_sq / total_weight.pow(2).clamp(min=self.eps)  # [B]
         return compactness
 
 
@@ -438,7 +459,7 @@ class HistoryAwareAnchorRouter(nn.Module):
         feedback: Optional[Tensor] = None,
         mask: Optional[Tensor] = None,
         hard: bool = False,
-    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, dict[str, Tensor]]:
         """Run the full routing pipeline across L stages.
 
         Parameters
@@ -461,18 +482,19 @@ class HistoryAwareAnchorRouter(nn.Module):
             Memory states (including initial m^(0)).
         all_anchors : Tensor  [B, L, T, d_u]
             Selected anchor tokens (weighted by y) for each stage.
+        geometry_cache : dict[str, Tensor]
+            Pre-computed geometry (reusable by the encoder for the lift).
         """
         B, T, _ = x.shape
         device = x.device
 
         geometry_cache = precompute_structural_geometry(x, mask=mask, knn_k=max(1, self.r))
         context = build_router_context(x, mask=mask, geometry_cache=geometry_cache)
-        static_features = build_structural_feature_tensor(
+        static_features = build_static_structural_features(
             x,
             mask=mask,
             knn_k=max(1, self.r),
             geometry_cache=geometry_cache,
-            include_selection=False,
         )
         similarity = build_feature_similarity(static_features, mask=mask)
 
@@ -497,6 +519,7 @@ class HistoryAwareAnchorRouter(nn.Module):
                 geometry_cache=geometry_cache,
                 context=context,
                 similarity=similarity,
+                static_features=static_features,
             )
             scores, v = self.scorer(
                 stage_u,
@@ -540,4 +563,4 @@ class HistoryAwareAnchorRouter(nn.Module):
         all_memory = torch.stack(all_memory, dim=1)  # [B, L+1, d_m]
         all_anchors = torch.stack(all_anchors, dim=1)  # [B, L, T, d_u]
 
-        return all_y, all_z, all_memory, all_anchors
+        return all_y, all_z, all_memory, all_anchors, geometry_cache

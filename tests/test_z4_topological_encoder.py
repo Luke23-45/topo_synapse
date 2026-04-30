@@ -30,8 +30,8 @@ def test_router_is_permutation_equivariant() -> None:
     permutation = torch.tensor([2, 4, 0, 1, 3])
     inverse = torch.argsort(permutation)
 
-    all_y, _, _, _ = router(x, feedback=feedback, hard=False)
-    permuted_y, _, _, _ = router(x[:, permutation], feedback=feedback, hard=False)
+    all_y, _, _, _, _ = router(x, feedback=feedback, hard=False)
+    permuted_y, _, _, _, _ = router(x[:, permutation], feedback=feedback, hard=False)
 
     assert torch.allclose(all_y, permuted_y[:, :, inverse], atol=1e-4)
 
@@ -56,7 +56,7 @@ def test_router_initial_memory_depends_on_input_context() -> None:
         ],
         dtype=torch.float32,
     )
-    _, _, all_memory, _ = router(x, feedback=torch.zeros(2, 1), hard=False)
+    _, _, all_memory, _, _ = router(x, feedback=torch.zeros(2, 1), hard=False)
 
     initial_memory = all_memory[:, 0]
     assert torch.isfinite(initial_memory).all()

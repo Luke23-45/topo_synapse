@@ -108,6 +108,47 @@ def precompute_structural_geometry(
     }
 
 
+def build_static_structural_features(
+    sequence: Tensor,
+    mask: Optional[Tensor] = None,
+    knn_k: int = 4,
+    geometry_cache: Optional[dict[str, Tensor]] = None,
+) -> Tensor:
+    """Build the static portion of structure-aware vectors (no selection weight).
+
+    This is the expensive concatenation that does not change across routing
+    stages.  Call once and reuse via :func:`append_selection_weight`.
+    """
+    if geometry_cache is None:
+        geometry_cache = precompute_structural_geometry(sequence, mask=mask, knn_k=knn_k)
+    valid = geometry_cache["valid"]
+    features = torch.cat([
+        sequence,
+        geometry_cache["centered"],
+        geometry_cache["standardized"],
+        geometry_cache["radius"],
+        geometry_cache["local_scale"],
+        geometry_cache["centrality"],
+    ], dim=-1)
+    return features * valid.unsqueeze(-1)
+
+
+def append_selection_weight(
+    static_features: Tensor,
+    selection_weights: Optional[Tensor] = None,
+) -> Tensor:
+    """Append the selection-weight channel to pre-built static features.
+
+    Cheap O(BT) operation — avoids re-concatenating the 6 static channels.
+    """
+    if selection_weights is None:
+        B, T = static_features.shape[:2]
+        selection = torch.zeros(B, T, 1, device=static_features.device, dtype=static_features.dtype)
+    else:
+        selection = selection_weights.unsqueeze(-1).to(dtype=static_features.dtype)
+    return torch.cat([static_features, selection], dim=-1)
+
+
 def build_structural_feature_tensor(
     sequence: Tensor,
     selection_weights: Optional[Tensor] = None,
@@ -127,31 +168,10 @@ def build_structural_feature_tensor(
     - global centrality via mean pairwise distance
     - selector weight / anchor prior
     """
-    if geometry_cache is None:
-        geometry_cache = precompute_structural_geometry(
-            sequence,
-            mask=mask,
-            knn_k=knn_k,
-        )
-    valid = geometry_cache["valid"]
-    features = [
-        sequence,
-        geometry_cache["centered"],
-        geometry_cache["standardized"],
-        geometry_cache["radius"],
-        geometry_cache["local_scale"],
-        geometry_cache["centrality"],
-    ]
-    if include_selection:
-        B, T, _ = sequence.shape
-        if selection_weights is None:
-            selection = torch.zeros(B, T, 1, device=sequence.device, dtype=sequence.dtype)
-        else:
-            selection = selection_weights.unsqueeze(-1).to(dtype=sequence.dtype)
-        features.append(selection)
-
-    features = torch.cat(features, dim=-1)
-    return features * valid.unsqueeze(-1)
+    static = build_static_structural_features(sequence, mask=mask, knn_k=knn_k, geometry_cache=geometry_cache)
+    if not include_selection:
+        return static
+    return append_selection_weight(static, selection_weights)
 
 
 def build_router_context(
@@ -199,11 +219,10 @@ def compute_structural_normalization_stats(
     tensor = torch.from_numpy(sequences.astype(np.float32))
     with torch.no_grad():
         geometry_cache = precompute_structural_geometry(tensor, knn_k=knn_k)
-        features = build_structural_feature_tensor(
+        features = build_static_structural_features(
             tensor,
             knn_k=knn_k,
             geometry_cache=geometry_cache,
-            include_selection=False,
         )
     flat = features.reshape(-1, features.shape[-1]).cpu().numpy().astype(np.float64)
     sigma = flat.std(axis=0)
