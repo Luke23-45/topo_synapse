@@ -265,29 +265,115 @@ class PhotonicAdapter(Z3Adapter):
         )
         return all_records
 
+    @staticmethod
+    def _read_h5_numeric(node: Any) -> np.ndarray | None:
+        """Read an HDF5 Dataset, handling JLD2 compound/opaque types.
+
+        JLD2 stores Julia structs (e.g. SMatrix) as HDF5 compound types
+        that ``np.asarray(ds, dtype=float32)`` cannot convert directly.
+        This method tries multiple strategies:
+        1. Direct float conversion (simple numeric datasets)
+        2. Read with native dtype, then extract numeric fields from
+           structured arrays
+        3. Read raw bytes and reinterpret as float64
+        """
+        import h5py
+
+        if not isinstance(node, h5py.Dataset):
+            return None
+
+        # Strategy 1: direct float conversion
+        try:
+            return np.asarray(node, dtype=np.float32)
+        except (OSError, TypeError, ValueError):
+            pass
+
+        # Strategy 2: read native dtype, handle structured/compound arrays
+        try:
+            data = node[()]
+            if isinstance(data, np.ndarray) and data.dtype.fields:
+                # Structured (compound) array — extract numeric fields
+                parts: list[np.ndarray] = []
+                for fname in data.dtype.names:
+                    field = data[fname]
+                    try:
+                        parts.append(np.asarray(field, dtype=np.float32))
+                    except (OSError, TypeError, ValueError):
+                        # Sub-field might itself be compound — recurse
+                        flat = np.asarray(field).ravel()
+                        try:
+                            parts.append(flat.astype(np.float32))
+                        except (ValueError, TypeError):
+                            continue
+                if parts:
+                    return np.concatenate(parts) if len(parts) > 1 else parts[0]
+            if isinstance(data, np.ndarray):
+                try:
+                    return data.astype(np.float32)
+                except (ValueError, TypeError):
+                    pass
+        except (OSError, TypeError, ValueError):
+            pass
+
+        # Strategy 3: read raw bytes, reinterpret as float64 then cast
+        try:
+            raw = np.asarray(node, dtype=node.dtype)
+            if raw.dtype.kind == "V":  # void / opaque
+                itemsize = raw.dtype.itemsize
+                f64_count = itemsize // 8
+                if f64_count > 0:
+                    result = np.zeros((raw.shape[0], f64_count), dtype=np.float32)
+                    for i in range(raw.shape[0]):
+                        buf = bytes(raw[i])
+                        vec = np.frombuffer(buf, dtype="<f8")[:f64_count]
+                        result[i] = vec.astype(np.float32)
+                    return result.ravel()
+        except (OSError, TypeError, ValueError):
+            pass
+
+        return None
+
     def _parse_jld2_lattice_file(
         self, h5file: Any, label: int
     ) -> list[dict[str, Any]]:
         """Parse a single JLD2 lattice file into record dicts."""
         import h5py
 
+        log.debug(
+            "Parsing JLD2 file: top-level keys=%s",
+            list(h5file.keys()),
+        )
+
         # --- isovalv (isovalues) — simple float vector ----------------------
         isovalv: np.ndarray | None = None
         if "isovalv" in h5file:
-            ds = h5file["isovalv"]
-            if isinstance(ds, h5py.Dataset):
-                isovalv = np.asarray(ds, dtype=np.float32).ravel()
+            node = h5file["isovalv"]
+            log.debug("isovalv: type=%s, dtype=%s, shape=%s",
+                      type(node).__name__,
+                      getattr(node, "dtype", "?"),
+                      getattr(node, "shape", "?"))
+            arr = self._read_h5_numeric(node)
+            if arr is not None:
+                isovalv = arr.ravel()
 
         # --- Rsv (lattice vectors) — (N, 2, 2) or similar ------------------
         Rsv: np.ndarray | None = None
         if "Rsv" in h5file:
-            ds = h5file["Rsv"]
-            if isinstance(ds, h5py.Dataset):
-                Rsv = np.asarray(ds, dtype=np.float32)
-                if Rsv.ndim == 1:
-                    Rsv = Rsv.reshape(-1, 1)
-                elif Rsv.ndim > 2:
-                    Rsv = Rsv.reshape(Rsv.shape[0], -1)
+            node = h5file["Rsv"]
+            log.debug("Rsv: type=%s, dtype=%s, shape=%s",
+                      type(node).__name__,
+                      getattr(node, "dtype", "?"),
+                      getattr(node, "shape", "?"))
+            if isinstance(node, h5py.Dataset):
+                arr = self._read_h5_numeric(node)
+                if arr is not None:
+                    Rsv = arr
+                    if Rsv.ndim == 1:
+                        Rsv = Rsv.reshape(-1, 1)
+                    elif Rsv.ndim > 2:
+                        Rsv = Rsv.reshape(Rsv.shape[0], -1)
+            elif isinstance(node, h5py.Group):
+                Rsv = self._collect_leaf_arrays(node)
 
         # --- flatv (Fourier lattices) — vector of custom Julia objects ------
         fourier_grids: np.ndarray | None = None
@@ -335,25 +421,36 @@ class PhotonicAdapter(Z3Adapter):
 
         # Simple dataset — use directly if it's a numeric array
         if isinstance(flatv_node, h5py.Dataset):
-            data = np.asarray(flatv_node, dtype=np.float32)
-            if data.ndim >= 2:
+            data = self._read_h5_numeric(flatv_node)
+            if data is not None and data.ndim >= 2:
                 return data
             return None
 
         if not isinstance(flatv_node, h5py.Group):
             return None
 
-        # Group of numbered sub-groups (one per sample)
+        # JLD2 stores vectors as groups with 1-based string keys ("1","2",…)
+        # or as sub-groups with arbitrary names.  Try both patterns.
+        all_keys = list(flatv_node.keys())
         digit_keys = sorted(
-            [k for k in flatv_node.keys() if k.isdigit()],
+            [k for k in all_keys if k.isdigit()],
             key=int,
         )
-        if not digit_keys:
+        # If no pure-digit keys, try all keys sorted naturally
+        sample_keys = digit_keys if digit_keys else sorted(all_keys)
+
+        if not sample_keys:
+            log.debug("flatv group has no sub-keys (keys: %s)", all_keys)
             return None
+
+        log.debug(
+            "flatv: %d sample keys (first 5: %s)",
+            len(sample_keys), sample_keys[:5],
+        )
 
         # Collect per-sample numerical vectors
         per_sample: list[np.ndarray] = []
-        for key in digit_keys:
+        for key in sample_keys:
             vec = self._collect_leaf_arrays(flatv_node[key])
             if vec is not None and vec.size > 0:
                 per_sample.append(vec)
@@ -386,10 +483,10 @@ class PhotonicAdapter(Z3Adapter):
         parts: list[np.ndarray] = []
 
         if isinstance(node, h5py.Dataset):
-            try:
-                return np.asarray(node, dtype=np.float32).ravel()
-            except Exception:
-                return None
+            arr = PhotonicAdapter._read_h5_numeric(node)
+            if arr is not None:
+                return arr.ravel()
+            return None
 
         if isinstance(node, h5py.Group):
             for key in sorted(node.keys()):
