@@ -92,7 +92,16 @@ def build_dataloaders(
     loader_kwargs = {
         "batch_size": batch_size,
         "collate_fn": trajectory_collate_fn,
+        "num_workers": getattr(getattr(cfg, "training", None), "num_workers", 0),
+        "pin_memory": getattr(getattr(cfg, "training", None), "pin_memory", False),
     }
+    if loader_kwargs["num_workers"] > 0:
+        loader_kwargs["persistent_workers"] = getattr(
+            getattr(cfg, "training", None), "persistent_workers", False
+        )
+        loader_kwargs["prefetch_factor"] = getattr(
+            getattr(cfg, "training", None), "prefetch_factor", 2
+        )
 
     return (
         DataLoader(train_ds, shuffle=True, **loader_kwargs),

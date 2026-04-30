@@ -78,9 +78,9 @@ datasets:
     train_size: 512
     val_size: 128
     test_size: 128
-    noise_std: 0.03
+    noise_std: 0.30
     batch_size_override: null
-    num_seeds: 1  # Quick synthetic test - single seed is sufficient
+    num_seeds: 3  # Higher noise demands more seeds for statistical rigor
 
   # TelecomTS — 5G telemetry from HuggingFace (AliMaatouk/TelecomTS)
   # Actual dimensions: input_dim=16, num_classes=3, seq_len=256

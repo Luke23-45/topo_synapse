@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import logging
+import math
 from dataclasses import dataclass
 
 import torch
-from torch import nn, Tensor
+from torch import Tensor, nn
 
 from synapse.baselines.base import BaselineBackbone
 from synapse.baselines.registry import create_backbone
 from synapse.common.encoders import create_encoder
+from synapse.common.layers import PositionalEncoding1D
 
 from .deep_hodge import DeepHodgeTransformer
-
-log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -28,6 +27,57 @@ class UnifiedModelOutput:
     y_star: Tensor
     proxy_features: Tensor
     dense_lifted_cloud: Tensor
+
+
+class DeepHodgeStem(nn.Module):
+    """Lightweight learned proxy-token reducer for the Deep Hodge backbone."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        d_model: int,
+        num_proxy_tokens: int,
+        max_len: int,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.num_proxy_tokens = num_proxy_tokens
+
+        self.input_proj = nn.Linear(input_dim, d_model)
+        self.pos_enc = PositionalEncoding1D(max_len, d_model)
+        self.norm_in = nn.LayerNorm(d_model)
+        self.drop = nn.Dropout(dropout)
+
+        self.query_tokens = nn.Parameter(torch.randn(1, num_proxy_tokens, d_model) * 0.02)
+        self.key_proj = nn.Linear(d_model, d_model, bias=False)
+        self.value_proj = nn.Linear(d_model, d_model, bias=False)
+        self.out_proj = nn.Linear(d_model, d_model)
+        self.norm_out = nn.LayerNorm(d_model)
+
+    def forward(
+        self,
+        sequence: Tensor,
+        mask: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        x = self.input_proj(sequence)
+        x = self.pos_enc(x)
+        x = self.drop(self.norm_in(x))
+
+        keys = self.key_proj(x)
+        values = self.value_proj(x)
+        queries = self.query_tokens.expand(sequence.shape[0], -1, -1)
+
+        attn = torch.matmul(queries, keys.transpose(1, 2)) / math.sqrt(self.d_model)
+        if mask is not None:
+            invalid = mask <= 0
+            attn = attn.masked_fill(invalid.unsqueeze(1), float("-inf"))
+        weights = torch.softmax(attn, dim=-1)
+
+        tokens = torch.matmul(weights, values)
+        tokens = self.norm_out(self.out_proj(tokens) + queries)
+        y_star = weights.mean(dim=1)
+        return tokens, y_star
 
 
 class DeepHodgeBackbone(BaselineBackbone):
@@ -106,12 +156,20 @@ class UnifiedModel(nn.Module):
         self.backbone_type = backbone_type
         self.d_model = d_model
         self.num_classes = num_classes
-
-        if backbone_type == "deep_hodge":
-            modality = "topological"
         self.modality = modality
 
-        if modality == "topological":
+        self._has_topological_encoder = False
+        self._uses_deep_hodge_stem = backbone_type == "deep_hodge"
+
+        if self._uses_deep_hodge_stem:
+            self.encoder = DeepHodgeStem(
+                input_dim=input_dim,
+                d_model=d_model,
+                num_proxy_tokens=max_proxy_points,
+                max_len=num_tokens,
+                dropout=dropout,
+            )
+        elif modality == "topological":
             self.encoder = create_encoder(
                 "topological",
                 input_dim=input_dim,
@@ -124,6 +182,7 @@ class UnifiedModel(nn.Module):
                 L=max_proxy_points,
                 max_proxy_points=max_proxy_points,
             )
+            self._has_topological_encoder = True
         elif modality == "temporal":
             self.encoder = create_encoder(
                 "temporal",
@@ -189,8 +248,6 @@ class UnifiedModel(nn.Module):
                 backbone_kwargs["kernel_size"] = kernel_size
             self.backbone = create_backbone(backbone_type, **backbone_kwargs)
 
-        self._has_topological_encoder = modality == "topological"
-
     @property
     def num_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
@@ -202,6 +259,8 @@ class UnifiedModel(nn.Module):
     def forward(self, sequence: Tensor, mask: Tensor | None = None) -> UnifiedModelOutput:
         if self._has_topological_encoder:
             tokens, y_star, _all_y, _all_memory = self.encoder(sequence, mask=mask)
+        elif self._uses_deep_hodge_stem:
+            tokens, y_star = self.encoder(sequence, mask=mask)
         else:
             tokens = self.encoder(sequence)
             y_star = torch.zeros(sequence.shape[0], sequence.shape[1], device=sequence.device)
@@ -227,4 +286,10 @@ class UnifiedModel(nn.Module):
 Z3UnifiedModel = UnifiedModel
 
 
-__all__ = ["DeepHodgeBackbone", "UnifiedModel", "UnifiedModelOutput", "Z3UnifiedModel"]
+__all__ = [
+    "DeepHodgeBackbone",
+    "DeepHodgeStem",
+    "UnifiedModel",
+    "UnifiedModelOutput",
+    "Z3UnifiedModel",
+]

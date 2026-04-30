@@ -70,6 +70,6 @@ datasets:
     train_size: 512
     val_size: 128
     test_size: 128
-    noise_std: 0.03
+    noise_std: 0.30
 
 output_dir: outputs/baselines

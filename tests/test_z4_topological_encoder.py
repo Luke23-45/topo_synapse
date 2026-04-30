@@ -6,7 +6,9 @@ from synapse.common.encoders.history_aware_router import HistoryAwareAnchorRoute
 from synapse.common.encoders.legacy import LegacyZ3TopologicalEncoder
 from synapse.common.encoders.topological_encoder import TopologicalEncoder
 from synapse.common.encoders.z4_topological_encoder import Z4TopologicalEncoder
+from synapse.synapse_arch.deep_hodge import DeepHodgeLayer
 from synapse.synapse_arch.model import TopologyFirstModel
+from synapse.synapse_arch.unified import DeepHodgeStem
 from synapse.synapse_arch.unified import UnifiedModel
 from synapse.synapse_arch.config import SynapseConfig
 from synapse.synapse_core.topology_features import structural_feature_dim
@@ -135,7 +137,7 @@ def test_active_topological_encoder_matches_z4_shape() -> None:
     assert all_y.shape == (2, 3, 6)
 
 
-def test_unified_deep_hodge_defaults_to_z4_encoder() -> None:
+def test_unified_deep_hodge_uses_lightweight_proxy_stem() -> None:
     model = UnifiedModel(
         backbone_type="deep_hodge",
         input_dim=3,
@@ -148,7 +150,108 @@ def test_unified_deep_hodge_defaults_to_z4_encoder() -> None:
         hidden_dim=8,
         max_proxy_points=4,
     )
-    assert isinstance(model.encoder, Z4TopologicalEncoder)
+    assert isinstance(model.encoder, DeepHodgeStem)
+
+
+def _reference_deep_hodge_forward(
+    layer: DeepHodgeLayer,
+    x: torch.Tensor,
+    mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    B_batch, K_eff, d = x.shape
+    pad_len = layer.max_points - K_eff
+    if pad_len > 0:
+        x_pad = torch.zeros(B_batch, pad_len, d, device=x.device, dtype=x.dtype)
+        x = torch.cat([x, x_pad], dim=1)
+        if mask is not None:
+            m_pad = torch.zeros(B_batch, pad_len, device=mask.device, dtype=mask.dtype)
+            mask = torch.cat([mask, m_pad], dim=1)
+
+    if mask is None:
+        mask = torch.ones(B_batch, layer.max_points, device=x.device, dtype=x.dtype)
+    else:
+        mask = mask.to(device=x.device, dtype=x.dtype)
+
+    residual = x
+    x_norm = layer.norm1(x)
+    P = layer.geom_proj(x_norm)
+    mask_2d = mask.unsqueeze(2) * mask.unsqueeze(1)
+    D = torch.cdist(P, P) * mask_2d
+    scales = torch.exp(layer.log_scales)
+
+    V0 = layer.W_V0(x_norm).view(B_batch, layer.max_points, layer.num_scales, d)
+    E_in_raw = torch.matmul(layer.abs_B1.t(), x_norm)
+    E_in = layer.W_E_in(E_in_raw).view(B_batch, layer.abs_B1.shape[1], layer.num_scales, d)
+
+    node_updates = []
+    edge_updates = []
+    for s_idx in range(layer.num_scales):
+        sigma = scales[s_idx]
+        affinity = torch.exp(-D.square() / (2.0 * sigma.square() + 1e-8)) * mask_2d
+        W1 = affinity[:, layer.e_idx_i, layer.e_idx_j]
+        W2 = W1[:, layer.t_idx_ij] * W1[:, layer.t_idx_jk] * W1[:, layer.t_idx_ik]
+
+        B1_scaled = layer.B1.unsqueeze(0) * W1.unsqueeze(1)
+        L0 = torch.bmm(B1_scaled, layer.B1.unsqueeze(0).expand(B_batch, -1, -1).transpose(1, 2))
+        L0 = L0 + layer.tau * layer._eye_K.unsqueeze(0)
+        node_updates.append(torch.bmm(L0, V0[:, :, s_idx, :]))
+
+        term_down = torch.bmm(
+            layer.B1.t().unsqueeze(0) * mask.unsqueeze(1),
+            layer.B1.unsqueeze(0).expand(B_batch, -1, -1),
+        )
+        B2_scaled = layer.B2.unsqueeze(0) * W2.unsqueeze(1)
+        term_up = torch.bmm(
+            B2_scaled,
+            layer.B2.t().unsqueeze(0).expand(B_batch, -1, -1),
+        )
+        L1 = term_down + term_up + layer.tau * layer._eye_E.unsqueeze(0)
+        M1 = torch.bmm(L1, E_in[:, :, s_idx, :])
+        edge_updates.append(
+            torch.bmm(layer.abs_B1.unsqueeze(0).expand(B_batch, -1, -1), M1)
+        )
+
+    all_updates = torch.cat(node_updates + edge_updates, dim=-1)
+    x = residual + layer.dropout(layer.out_proj(all_updates))
+    x = x + layer.ffn(layer.norm2(x))
+    if pad_len > 0:
+        x = x[:, :K_eff, :]
+    return x
+
+
+def test_vectorized_deep_hodge_layer_matches_reference() -> None:
+    torch.manual_seed(5)
+    layer = DeepHodgeLayer(
+        d_model=8,
+        k_dim=4,
+        num_scales=2,
+        max_points=5,
+        dropout=0.0,
+    )
+    layer.eval()
+
+    x = torch.randn(2, 4, 8)
+    mask = torch.tensor([[1, 1, 1, 1], [1, 1, 1, 0]], dtype=torch.float32)
+
+    with torch.no_grad():
+        expected = _reference_deep_hodge_forward(layer, x, mask)
+        actual = layer(x, mask)
+
+    assert torch.allclose(actual, expected, atol=1e-5, rtol=1e-5)
+
+
+def test_deep_hodge_stem_emits_proxy_tokens_and_attention_mass() -> None:
+    torch.manual_seed(11)
+    stem = DeepHodgeStem(input_dim=3, d_model=8, num_proxy_tokens=4, max_len=6, dropout=0.0)
+
+    sequence = torch.randn(2, 6, 3)
+    mask = torch.tensor([[1, 1, 1, 1, 1, 1], [1, 1, 1, 0, 0, 0]], dtype=torch.float32)
+    tokens, y_star = stem(sequence, mask=mask)
+
+    assert tokens.shape == (2, 4, 8)
+    assert y_star.shape == (2, 6)
+    assert torch.allclose(y_star.sum(dim=1), torch.ones(2), atol=1e-6)
+    assert torch.isfinite(tokens).all()
 
 
 def test_active_topological_encoder_aliases_z4() -> None:
