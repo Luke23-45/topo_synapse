@@ -36,8 +36,9 @@ if project_root not in sys.path:
  
 from synapse.synapse_arch.deep_hodge import DeepHodgeTransformer
 from synapse.synapse_core.event import CausalEventModel
-from synapse.synapse_core.lift import dense_anchor_vectors, topology_project_torch
+from synapse.synapse_core.lift import dense_anchor_vectors
 from synapse.synapse_arch.normalized_lift import NormalizedLift
+from synapse.synapse_core.topology_features import structural_feature_dim
 from synapse.common.encoders.topological_encoder import SoftSelectorProxy
  
 # ============================================================
@@ -203,7 +204,7 @@ class EncoderSaliencySelection(nn.Module):
         self.K = K
         self.max_proxy_points = max_proxy_points
  
-        anchor_dim = input_dim + 3
+        anchor_dim = structural_feature_dim(input_dim, include_selection=False)
         self.event_model = CausalEventModel(input_dim, 64)
         self.selector = SoftSelectorProxy(K=K, r=r, lam=lam)
         self.lift = NormalizedLift(anchor_dim, k_dim)
@@ -220,7 +221,6 @@ class EncoderSaliencySelection(nn.Module):
  
         # Topology-projected lift
         dense_vectors = dense_anchor_vectors(x, saliency_scores)
-        dense_vectors = topology_project_torch(dense_vectors)
         _, dense_lifted_cloud = self.lift(dense_vectors)  # [B, T, k]
  
         # Select top-K anchors by saliency weight
@@ -242,7 +242,7 @@ class EncoderRandomSelection(nn.Module):
         self.K = K
         self.max_proxy_points = max_proxy_points
  
-        anchor_dim = input_dim + 3
+        anchor_dim = structural_feature_dim(input_dim, include_selection=False)
         self.event_model = CausalEventModel(input_dim, 64)
         self.lift = NormalizedLift(anchor_dim, k_dim)
         self.topology_proj = nn.Linear(k_dim, d_model)
@@ -268,7 +268,6 @@ class EncoderRandomSelection(nn.Module):
  
         # Topology-projected lift
         dense_vectors = dense_anchor_vectors(x, saliency_scores)
-        dense_vectors = topology_project_torch(dense_vectors)
         _, dense_lifted_cloud = self.lift(dense_vectors)  # [B, T, k]
  
         # Gather random anchors
@@ -288,7 +287,7 @@ class EncoderUniformSelection(nn.Module):
         self.K = K
         self.max_proxy_points = max_proxy_points
  
-        anchor_dim = input_dim + 3
+        anchor_dim = structural_feature_dim(input_dim, include_selection=False)
         self.event_model = CausalEventModel(input_dim, 64)
         self.lift = NormalizedLift(anchor_dim, k_dim)
         self.topology_proj = nn.Linear(k_dim, d_model)
@@ -312,7 +311,6 @@ class EncoderUniformSelection(nn.Module):
  
         # Topology-projected lift
         dense_vectors = dense_anchor_vectors(x, saliency_scores)
-        dense_vectors = topology_project_torch(dense_vectors)
         _, dense_lifted_cloud = self.lift(dense_vectors)  # [B, T, k]
  
         # Gather uniformly spaced anchors

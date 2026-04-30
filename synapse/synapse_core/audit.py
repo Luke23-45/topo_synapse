@@ -25,6 +25,7 @@ from .lift import (
     topology_project_numpy,
 )
 from .selection import build_anchor_sequence, hard_select_indices
+from .topology_features import build_structural_feature_tensor, structural_feature_dim
 from .topology import compute_persistence_diagrams, summarize_diagrams
 
 
@@ -53,9 +54,27 @@ def compute_exact_topology_audit(
         7. Compute exact persistence diagrams via Vietoris-Rips
     """
     indices = hard_select_indices(y_star, K=K, r=r)
-    anchors = build_anchor_sequence(indices, trajectory, event_scores)
-    anchor_matrix = anchor_vectors(anchors, D=trajectory.shape[1] + 3)
-    projected = topology_project_numpy(anchor_matrix)
+    if W_theta.shape[1] == structural_feature_dim(trajectory.shape[1], include_selection=False):
+        selected = trajectory[indices] if len(indices) else np.empty((0, trajectory.shape[1]), dtype=np.float64)
+        selected_y = y_star[indices] if len(indices) else np.empty((0,), dtype=np.float64)
+        selected_tensor = torch.from_numpy(selected.astype(np.float32)).unsqueeze(0)
+        weight_tensor = torch.from_numpy(selected_y.astype(np.float32)).unsqueeze(0)
+        projected = (
+            build_structural_feature_tensor(
+                selected_tensor,
+                selection_weights=weight_tensor,
+                include_selection=False,
+            )
+            .squeeze(0)
+            .cpu()
+            .numpy()
+            .astype(np.float64)
+        )
+    else:
+        anchors = build_anchor_sequence(indices, trajectory, event_scores)
+        anchor_matrix = anchor_vectors(anchors, D=trajectory.shape[1] + 3)
+        projected = topology_project_numpy(anchor_matrix)
+
     normalized, _, _ = normalize_anchors(projected, mu=mu, sigma=sigma)
     cloud = apply_lift(normalized, W_theta)
     diagrams = compute_persistence_diagrams(cloud, Q=Q)

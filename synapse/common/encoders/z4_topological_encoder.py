@@ -8,9 +8,9 @@ Pipeline
 --------
 1. HistoryAwareAnchorRouter → selection weights y, content summaries z,
    memory states m, anchor tokens
-2. Dense anchor vectors + topology projection Π_top
+2. Dense structure-aware vectors
 3. NormalizedLift → lifted cloud [B, T, k]
-4. Top-K anchor gathering + projection → [B, K_eff, d_model]
+4. Stage-wise weighted pooling + projection → [B, L, d_model]
 
 The router's memory update is fed by task and topology feedback so that
 anchor choice evolves together with representation learning.
@@ -25,7 +25,10 @@ import torch.nn as nn
 from torch import Tensor
 
 from .history_aware_router import HistoryAwareAnchorRouter
-from ...synapse_core.lift import dense_anchor_vectors, topology_project_torch
+from ...synapse_core.topology_features import (
+    build_structural_feature_tensor,
+    structural_feature_dim,
+)
 from ...synapse_arch.normalized_lift import NormalizedLift
 
 
@@ -63,7 +66,7 @@ class Z4TopologicalEncoder(nn.Module):
     feedback_dim : int
         Dimension of the feedback signal for the router's GRU.
     max_proxy_points : int
-        Maximum simplicial complex size (K_eff).
+        Kept for API compatibility; unused by the soft Z4 encoder path.
     max_seq_len : int
         Maximum sequence length for positional bias.
     """
@@ -79,7 +82,7 @@ class Z4TopologicalEncoder(nn.Module):
         k: int = 16,
         K: int = 8,
         r: int = 1,
-        L: int = 1,
+        L: int = 16,
         lam: float = 0.5,
         coverage_gamma: float = 1.0,
         init_temperature: float = 1.0,
@@ -91,9 +94,7 @@ class Z4TopologicalEncoder(nn.Module):
         self.K = K
         self.r = r
         self.L = L
-        self.max_proxy_points = max_proxy_points
-
-        anchor_dim = input_dim + 3  # [time, state, delta, saliency]
+        anchor_dim = structural_feature_dim(input_dim, include_selection=False)
 
         # Stage 1: History-Aware Anchor Router
         self.router = HistoryAwareAnchorRouter(
@@ -124,6 +125,7 @@ class Z4TopologicalEncoder(nn.Module):
         self,
         x: Tensor,
         feedback: Optional[Tensor] = None,
+        mask: Optional[Tensor] = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """Encode raw sequence into topological anchor tokens.
 
@@ -138,7 +140,7 @@ class Z4TopologicalEncoder(nn.Module):
 
         Returns
         -------
-        tokens : Tensor  [B, K_eff, d_model]
+        tokens : Tensor  [B, L, d_model]
             Encoded anchor tokens.
         y_star : Tensor  [B, T]
             Aggregated anchor weights (sum over routing stages,
@@ -148,30 +150,28 @@ class Z4TopologicalEncoder(nn.Module):
         all_memory : Tensor  [B, L+1, d_m]
             Memory states across routing stages.
         """
-        B, T, _ = x.shape
-        hard = not self.training  # hard selection at inference
-
         # Stage 1: Router — learned anchor selection
         all_y, all_z, all_memory, all_anchors = self.router(
-            x, feedback=feedback, hard=hard
+            x, feedback=feedback, mask=mask, hard=False
         )
 
         # Aggregate selection weights across stages for downstream use
         y_star = all_y.sum(dim=1)  # [B, T]
 
-        # Stage 2: Build dense anchor vectors and apply topology projection
-        # Use the aggregated y_star as a saliency-like signal for the lift
-        dense_vectors = dense_anchor_vectors(x, y_star)  # [B, T, anchor_dim]
-        dense_vectors = topology_project_torch(dense_vectors)  # Π_top
+        # Stage 2: Build structure-aware dense vectors for the lift
+        dense_vectors = build_structural_feature_tensor(
+            x,
+            mask=mask,
+            knn_k=max(1, self.r),
+            include_selection=False,
+        )
         _, dense_lifted_cloud = self.lift(dense_vectors)  # [B, T, k]
 
-        # Stage 3: Select top-K anchors from the lifted cloud
-        K_eff = min(T, self.max_proxy_points)
-        _, top_idx = torch.topk(y_star, K_eff, dim=1)  # [B, K_eff]
-        top_idx_exp = top_idx.unsqueeze(-1).expand(-1, -1, dense_lifted_cloud.shape[-1])
-        cloud = torch.gather(dense_lifted_cloud, 1, top_idx_exp)  # [B, K_eff, k]
+        # Stage 3: Convert each routing stage into a soft anchor token.
+        stage_mass = all_y.sum(dim=-1, keepdim=True).clamp_min(1e-6)  # [B, L, 1]
+        cloud = torch.einsum("blt,btk->blk", all_y, dense_lifted_cloud) / stage_mass  # [B, L, k]
 
         # Stage 4: Project to d_model
-        tokens = self.topology_proj(cloud)  # [B, K_eff, d_model]
+        tokens = self.topology_proj(cloud)  # [B, L, d_model]
 
         return tokens, y_star, all_y, all_memory

@@ -38,8 +38,9 @@ if project_root not in sys.path:
 
 from synapse.synapse_arch.deep_hodge import DeepHodgeTransformer
 from synapse.synapse_core.event import CausalEventModel
-from synapse.synapse_core.lift import dense_anchor_vectors, topology_project_torch
+from synapse.synapse_core.lift import dense_anchor_vectors
 from synapse.synapse_arch.normalized_lift import NormalizedLift
+from synapse.synapse_core.topology_features import structural_feature_dim
 from synapse.common.encoders.topological_encoder import SoftSelectorProxy
 from synapse.common.encoders.z4_topological_encoder import Z4TopologicalEncoder
 
@@ -207,7 +208,7 @@ class EncoderZ3Saliency(nn.Module):
         self.max_proxy_points = max_proxy_points
         self.d_model = d_model
 
-        anchor_dim = input_dim + 3
+        anchor_dim = structural_feature_dim(input_dim, include_selection=False)
         self.event_model = CausalEventModel(input_dim, 64)
         self.selector = SoftSelectorProxy(K=K, r=r, lam=lam)
         self.lift = NormalizedLift(anchor_dim, k_dim)
@@ -221,7 +222,6 @@ class EncoderZ3Saliency(nn.Module):
         y_star = self.selector(saliency_scores)
 
         dense_vectors = dense_anchor_vectors(x, saliency_scores)
-        dense_vectors = topology_project_torch(dense_vectors)
         _, dense_lifted_cloud = self.lift(dense_vectors)
 
         B, N, k_dim_out = dense_lifted_cloud.shape
@@ -243,7 +243,7 @@ class EncoderZ3Uniform(nn.Module):
         self.max_proxy_points = max_proxy_points
         self.d_model = d_model
 
-        anchor_dim = input_dim + 3
+        anchor_dim = structural_feature_dim(input_dim, include_selection=False)
         self.event_model = CausalEventModel(input_dim, 64)
         self.lift = NormalizedLift(anchor_dim, k_dim)
         self.topology_proj = nn.Linear(k_dim, d_model)
@@ -264,7 +264,6 @@ class EncoderZ3Uniform(nn.Module):
         y_star.scatter_(1, uniform_idx, 1.0)
 
         dense_vectors = dense_anchor_vectors(x, saliency_scores)
-        dense_vectors = topology_project_torch(dense_vectors)
         _, dense_lifted_cloud = self.lift(dense_vectors)
 
         k_dim_out = dense_lifted_cloud.shape[-1]
@@ -511,6 +510,9 @@ if __name__ == "__main__":
     epochs = 25
     patience = 7
 
+    # Set to True to skip legacy Z3 baselines and only run Z4 variants
+    skip_z3_baselines = True
+
     # Encoder variants to compare
     encoder_variants = [
         ("z3_saliency", EncoderZ3Saliency, {"uses_feedback": False}),
@@ -518,6 +520,11 @@ if __name__ == "__main__":
         ("z4_router_L1", EncoderZ4Router,  {"uses_feedback": True, "L": 1}),
         ("z4_router_L2", EncoderZ4Router,  {"uses_feedback": True, "L": 2}),
     ]
+
+    if skip_z3_baselines:
+        encoder_variants = [
+            v for v in encoder_variants if not v[0].startswith("z3_")
+        ]
 
     K_values = [8, 32]
 
@@ -631,7 +638,7 @@ if __name__ == "__main__":
     print(f"\n{'Variant':<18} {'K':<6} {'Test Acc (mean±std)':<24} {'Best Val Loss':<16} {'Time (s)':<10}")
     print("-" * 74)
 
-    variant_order = ["z3_saliency", "z3_uniform", "z4_router_L1", "z4_router_L2"]
+    variant_order = [v[0] for v in encoder_variants]
     for variant_name in variant_order:
         for K in K_values:
             stats = aggregated[variant_name][K]
@@ -654,43 +661,56 @@ if __name__ == "__main__":
                 row += f"{per_class.get(c, 0.0):.1f}{'':<6}"
             print(row)
 
-    # Z4 vs Z3 advantage analysis
-    print(f"\n{'=' * 70}")
-    print("Z4 Router Advantage Analysis (vs Z3 baselines)")
-    print(f"{'=' * 70}")
+    # Z4 vs Z3 advantage analysis (only when Z3 baselines are present)
+    if not skip_z3_baselines:
+        print(f"\n{'=' * 70}")
+        print("Z4 Router Advantage Analysis (vs Z3 baselines)")
+        print(f"{'=' * 70}")
 
-    for K in K_values:
-        z3_sal = aggregated["z3_saliency"][K]['mean_acc']
-        z3_uni = aggregated["z3_uniform"][K]['mean_acc']
-        z4_l1 = aggregated["z4_router_L1"][K]['mean_acc']
-        z4_l2 = aggregated["z4_router_L2"][K]['mean_acc']
+        for K in K_values:
+            z3_sal = aggregated["z3_saliency"][K]['mean_acc']
+            z3_uni = aggregated["z3_uniform"][K]['mean_acc']
+            z4_l1 = aggregated["z4_router_L1"][K]['mean_acc']
+            z4_l2 = aggregated["z4_router_L2"][K]['mean_acc']
 
-        print(f"\nK={K}:")
-        print(f"  Z4-L1 vs Z3-Saliency:  {z4_l1 - z3_sal:+.2f}%")
-        print(f"  Z4-L1 vs Z3-Uniform:   {z4_l1 - z3_uni:+.2f}%")
-        print(f"  Z4-L2 vs Z3-Saliency:  {z4_l2 - z3_sal:+.2f}%")
-        print(f"  Z4-L2 vs Z3-Uniform:   {z4_l2 - z3_uni:+.2f}%")
-        print(f"  Z4-L2 vs Z4-L1:        {z4_l2 - z4_l1:+.2f}% (memory benefit)")
+            print(f"\nK={K}:")
+            print(f"  Z4-L1 vs Z3-Saliency:  {z4_l1 - z3_sal:+.2f}%")
+            print(f"  Z4-L1 vs Z3-Uniform:   {z4_l1 - z3_uni:+.2f}%")
+            print(f"  Z4-L2 vs Z3-Saliency:  {z4_l2 - z3_sal:+.2f}%")
+            print(f"  Z4-L2 vs Z3-Uniform:   {z4_l2 - z3_uni:+.2f}%")
+            print(f"  Z4-L2 vs Z4-L1:        {z4_l2 - z4_l1:+.2f}% (memory benefit)")
 
-        best_z3 = max(z3_sal, z3_uni)
-        best_z4 = max(z4_l1, z4_l2)
-        if best_z4 > best_z3:
-            print(f"  → Z4 router IMPROVES over best Z3 baseline by {best_z4 - best_z3:+.2f}%")
-        else:
-            print(f"  → Z4 router does NOT improve over best Z3 baseline ({best_z3 - best_z4:.2f}% worse)")
+            best_z3 = max(z3_sal, z3_uni)
+            best_z4 = max(z4_l1, z4_l2)
+            if best_z4 > best_z3:
+                print(f"  → Z4 router IMPROVES over best Z3 baseline by {best_z4 - best_z3:+.2f}%")
+            else:
+                print(f"  → Z4 router does NOT improve over best Z3 baseline ({best_z3 - best_z4:.2f}% worse)")
 
-    # Per-class delta analysis
-    print(f"\n{'=' * 70}")
-    print("Per-Class Delta: Z4-L2 vs Z3-Uniform (best Z3 baseline)")
-    print(f"{'=' * 70}")
-    for K in K_values:
-        print(f"\nK={K}:")
-        z3_uni_pc = aggregated["z3_uniform"][K]['per_class_acc_mean']
-        z4_l2_pc = aggregated["z4_router_L2"][K]['per_class_acc_mean']
-        for c, name in enumerate(CLASS_NAMES):
-            delta = z4_l2_pc.get(c, 0.0) - z3_uni_pc.get(c, 0.0)
-            marker = "↑" if delta > 0 else "↓" if delta < 0 else "="
-            print(f"  {name:<10}: {z4_l2_pc.get(c, 0.0):.1f}% vs {z3_uni_pc.get(c, 0.0):.1f}%  ({delta:+.1f}% {marker})")
+        # Per-class delta analysis
+        print(f"\n{'=' * 70}")
+        print("Per-Class Delta: Z4-L2 vs Z3-Uniform (best Z3 baseline)")
+        print(f"{'=' * 70}")
+        for K in K_values:
+            print(f"\nK={K}:")
+            z3_uni_pc = aggregated["z3_uniform"][K]['per_class_acc_mean']
+            z4_l2_pc = aggregated["z4_router_L2"][K]['per_class_acc_mean']
+            for c, name in enumerate(CLASS_NAMES):
+                delta = z4_l2_pc.get(c, 0.0) - z3_uni_pc.get(c, 0.0)
+                marker = "↑" if delta > 0 else "↓" if delta < 0 else "="
+                print(f"  {name:<10}: {z4_l2_pc.get(c, 0.0):.1f}% vs {z3_uni_pc.get(c, 0.0):.1f}%  ({delta:+.1f}% {marker})")
+    else:
+        # Z4-only comparison
+        print(f"\n{'=' * 70}")
+        print("Z4 Router Comparison (L1 vs L2)")
+        print(f"{'=' * 70}")
+        for K in K_values:
+            z4_l1 = aggregated["z4_router_L1"][K]['mean_acc']
+            z4_l2 = aggregated["z4_router_L2"][K]['mean_acc']
+            print(f"\nK={K}:")
+            print(f"  Z4-L1: {z4_l1:.2f}%")
+            print(f"  Z4-L2: {z4_l2:.2f}%")
+            print(f"  L2 vs L1: {z4_l2 - z4_l1:+.2f}% (memory benefit)")
 
     # Save results
     output_dir = os.path.join(os.path.dirname(__file__), '..', 'docs', 'xdev')

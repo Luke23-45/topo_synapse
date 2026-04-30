@@ -1,13 +1,4 @@
-"""
-Geometric Lift — Z3 Reference: §8, §10 of 01_main_definition.md
-
-Implements:
-    - Topology projection Π_top: zeroes out absolute time coordinate
-    - Dense anchor vector construction for training-time proxy
-    - Anchor vector construction for deployment-time audit
-    - Affine normalization N(v) = D^{-1}(v - μ)
-    - Learned lift ρ_Θ(a) = W_Θ · N(Π_top(v(a)))
-"""
+"""Geometric lift helpers for both legacy and structure-aware paths."""
 
 from __future__ import annotations
 
@@ -17,12 +8,13 @@ from typing import List, Optional, Tuple
 import numpy as np
 import torch
 
+from .topology_features import build_structural_feature_tensor
 
-# ─── Anchor dataclass ───────────────────────────────────────────────
 
 @dataclass
 class Anchor:
-    """A single retained anchor: a_j = (t_j, s_j, δ_j, ξ_j)."""
+    """Legacy exact-audit anchor representation."""
+
     t: float
     s: np.ndarray
     delta: int
@@ -30,10 +22,8 @@ class Anchor:
     index: int
 
 
-# ─── Topology Projection (§8) ───────────────────────────────────────
-
 def topology_project_numpy(vectors: np.ndarray) -> np.ndarray:
-    """Π_top: zero out absolute time coordinate (column 0)."""
+    """Legacy topology projection that removes absolute time."""
     projected = np.array(vectors, copy=True)
     if projected.size > 0:
         projected[:, 0] = 0.0
@@ -41,44 +31,24 @@ def topology_project_numpy(vectors: np.ndarray) -> np.ndarray:
 
 
 def topology_project_torch(vectors: torch.Tensor) -> torch.Tensor:
-    """Π_top: zero out absolute time coordinate (column 0)."""
+    """Legacy topology projection that removes absolute time."""
     projected = vectors.clone()
     if projected.numel() > 0:
         projected[..., 0] = 0.0
     return projected
 
 
-# ─── Dense Anchor Vectors for Training (§10) ────────────────────────
-
 def dense_anchor_vectors(sequence: torch.Tensor, saliency_scores: torch.Tensor) -> torch.Tensor:
-    """Build dense per-time surrogate vectors ṽ_t for training proxy.
-
-    ṽ_t = [t̃_t, s̃_t^T, δ̃_t, ξ̃_t]^T ∈ ℝ^{d+3}
-    """
-    batch, steps, _ = sequence.shape
-    time = torch.linspace(
-        1.0 / max(steps, 1),
-        1.0,
-        steps,
-        device=sequence.device,
-        dtype=sequence.dtype,
-    )
-    time = time.unsqueeze(0).expand(batch, -1)
-    delta = torch.ones_like(time)
-    delta[:, 0] = 0.0
-    return torch.cat(
-        [time.unsqueeze(-1), sequence, delta.unsqueeze(-1), saliency_scores.unsqueeze(-1)],
-        dim=-1,
+    """Build dense structure-aware vectors for the differentiable lift."""
+    return build_structural_feature_tensor(
+        sequence,
+        selection_weights=saliency_scores,
+        include_selection=False,
     )
 
-
-# ─── Deployment Anchor Vector Construction (§7) ─────────────────────
 
 def anchor_vectors(anchors: List[Anchor], D: Optional[int] = None) -> np.ndarray:
-    """Build anchor vector matrix V from anchor sequence A*.
-
-    v(a_j) = [t_j, s_j^T, δ_j, ξ_j]^T ∈ ℝ^{d+3}
-    """
+    """Build the legacy exact-audit anchor matrix."""
     if not anchors:
         if D is None:
             return np.empty((0, 0), dtype=np.float64)
@@ -91,14 +61,12 @@ def anchor_vectors(anchors: List[Anchor], D: Optional[int] = None) -> np.ndarray
 
     for j, a in enumerate(anchors):
         V[j, 0] = a.t
-        V[j, 1:1 + d] = a.s
+        V[j, 1 : 1 + d] = a.s
         V[j, 1 + d] = a.delta
         V[j, 2 + d] = a.xi
 
     return V
 
-
-# ─── Normalization (§8) ─────────────────────────────────────────────
 
 def normalize_anchors(
     V: np.ndarray,
@@ -129,10 +97,8 @@ def normalize_anchors(
     return V_norm, mu, sigma
 
 
-# ─── Learned Lift (§9) ──────────────────────────────────────────────
-
 def apply_lift(V_norm: np.ndarray, W_Theta: np.ndarray) -> np.ndarray:
-    """Apply learned lift: ρ_Θ(a_j) = W_Θ · N(v(a_j)) ∈ ℝ^k."""
+    """Apply the learned affine lift matrix."""
     if V_norm.shape[0] == 0:
         k = W_Theta.shape[0]
         return np.empty((0, k), dtype=np.float64)

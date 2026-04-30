@@ -206,7 +206,7 @@ class Z3UnifiedModel(nn.Module):
         # --- Encoder ---
         if modality == "topological":
             self.encoder = create_encoder(
-                "topological",
+                "topological_z4",
                 input_dim=input_dim,
                 d_model=d_model,
                 hidden_dim=hidden_dim,
@@ -214,6 +214,7 @@ class Z3UnifiedModel(nn.Module):
                 K=K,
                 r=r,
                 lam=lam,
+                L=max_proxy_points,
                 max_proxy_points=max_proxy_points,
             )
         elif modality == "temporal":
@@ -307,7 +308,7 @@ class Z3UnifiedModel(nn.Module):
         """
         # Encode
         if self._has_topological_encoder:
-            tokens, y_star = self.encoder(sequence)
+            tokens, y_star, _all_y, _all_memory = self.encoder(sequence)
         else:
             tokens = self.encoder(sequence)
             y_star = torch.zeros(sequence.shape[0], sequence.shape[1], device=sequence.device)

@@ -62,55 +62,8 @@ def build_model_from_cfg(cfg, bundle: DatasetBundle | None = None) -> Z3Topology
 
 
 def resolve_normalization(bundle: DatasetBundle) -> dict[str, np.ndarray]:
-    """Compute lift-layer normalization stats, respecting preprocessor stats.
-
-    If the adapter's preprocessor already z-score normalized the data
-    (indicated by ``normalization_mean`` / ``normalization_std`` in the
-    bundle metadata), those stats are reused for the data dimensions so
-    that the lift layer does not double-normalize.  The augmentation
-    channels (time, delta, saliency) are always computed fresh.
-
-    For bundles without preprocessor stats (e.g. synthetic), stats are
-    computed from the raw training sequences as before.
-    """
+    """Compute structure-aware lift normalization stats from train data."""
     from synapse.arch.data.normalization import compute_normalization_stats
-
-    pre_mu = bundle.metadata.get("normalization_mean")
-    pre_sigma = bundle.metadata.get("normalization_std")
-
-    if pre_mu is not None and pre_sigma is not None:
-        log.info("Using preprocessor normalization stats (skipping recomputation)")
-        d = bundle.train_sequences.shape[2]
-        T = bundle.train_sequences.shape[1]
-        N = bundle.train_sequences.shape[0]
-
-        time_mu = 0.0
-        time_sigma = 1.0
-
-        delta_vals = np.ones((N, T), dtype=np.float64)
-        delta_vals[:, 0] = 0.0
-        delta_mu = float(delta_vals.mean())
-        delta_sigma = float(delta_vals.std())
-        if delta_sigma <= 0:
-            delta_sigma = 1.0
-
-        saliency_mu = 0.0
-        saliency_sigma = 1.0
-
-        mu = np.concatenate([
-            np.array([time_mu], dtype=np.float64),
-            pre_mu.astype(np.float64),
-            np.array([delta_mu], dtype=np.float64),
-            np.array([saliency_mu], dtype=np.float64),
-        ])
-        sigma = np.concatenate([
-            np.array([time_sigma], dtype=np.float64),
-            pre_sigma.astype(np.float64),
-            np.array([delta_sigma], dtype=np.float64),
-            np.array([saliency_sigma], dtype=np.float64),
-        ])
-        sigma[sigma <= 0] = 1.0
-        return {"mu": mu, "sigma": sigma}
 
     return compute_normalization_stats(bundle.train_sequences)
 

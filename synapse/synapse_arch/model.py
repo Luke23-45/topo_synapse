@@ -23,12 +23,11 @@ from synapse.common.types import ProxyComputation
 from synapse.synapse_core.audit import compute_exact_topology_audit
 from synapse.synapse_core.event import CausalEventModel
 from synapse.synapse_core.lift import (
-    dense_anchor_vectors,
     normalize_anchors,
-    topology_project_torch,
 )
 from synapse.synapse_core.proxy import DifferentiableHodgeProxy
 from synapse.synapse_core.selection import solve_relaxed_selector
+from synapse.synapse_core.topology_features import build_structural_feature_tensor
 
 from .config import SynapseConfig
 from .deep_hodge import DeepHodgeTransformer
@@ -59,7 +58,7 @@ class Z3TopologyFirstModel(nn.Module):
     def __init__(self, config: SynapseConfig) -> None:
         super().__init__()
         self.config = config
-        anchor_dim = config.input_dim + 3  # [time, state, delta, saliency]
+        anchor_dim = 3 * config.input_dim + 3
 
         # Stage 1: Causal event detection and saliency normalization
         self.event_model = CausalEventModel(config.input_dim, config.hidden_dim)
@@ -138,8 +137,11 @@ class Z3TopologyFirstModel(nn.Module):
         y_star = self._solve_batch_selector(saliency_scores)
 
         # Stage 3: Topology-projected lift
-        dense_vectors = dense_anchor_vectors(sequence, saliency_scores)
-        dense_vectors = topology_project_torch(dense_vectors)  # Π_top: zero out time
+        dense_vectors = build_structural_feature_tensor(
+            sequence,
+            knn_k=max(1, self.config.r),
+            include_selection=False,
+        )
         _, dense_lifted_cloud = self.lift(dense_vectors)
 
         # Stage 4: Topological Branch Processing (fully differentiable)
@@ -230,26 +232,12 @@ class Z3TopologyFirstModel(nn.Module):
 
         Must be called before training to set μ and σ for the affine normalization.
         """
-        steps = sequences.shape[1]
-        time = np.linspace(1.0 / max(steps, 1), 1.0, steps, dtype=np.float64)
-        delta = np.ones(steps, dtype=np.float64)
-        delta[0] = 0.0
-        dense = []
-        for seq in sequences:
-            saliency = np.zeros(steps, dtype=np.float64)
-            vectors = np.concatenate(
-                [
-                    time[:, None],
-                    seq,
-                    delta[:, None],
-                    saliency[:, None],
-                ],
-                axis=1,
-            )
-            # Topology projection: zero out time coordinate
-            vectors[:, 0] = 0.0
-            dense.append(vectors)
-        stacked = np.concatenate(dense, axis=0)
+        dense = build_structural_feature_tensor(
+            torch.from_numpy(sequences).float(),
+            knn_k=max(1, self.config.r),
+            include_selection=False,
+        )
+        stacked = dense.reshape(-1, dense.shape[-1]).cpu().numpy().astype(np.float64)
         _, mu, sigma = normalize_anchors(stacked)
         self.lift.set_normalization(
             torch.from_numpy(mu).float(),

@@ -20,9 +20,10 @@ import torch.nn.functional as F
 from torch import nn, Tensor
 
 from synapse.synapse_core.event import CausalEventModel
-from synapse.synapse_core.lift import (
-    dense_anchor_vectors,
-    topology_project_torch,
+from synapse.synapse_core.topology_features import (
+    build_feature_similarity,
+    build_structural_feature_tensor,
+    structural_feature_dim,
 )
 from synapse.synapse_core.selection import solve_relaxed_selector
 from synapse.synapse_arch.normalized_lift import NormalizedLift
@@ -48,7 +49,7 @@ class SoftSelectorProxy(nn.Module):
         self.lam = lam
         self.log_temperature = nn.Parameter(torch.log(torch.tensor(init_temperature)))
 
-    def forward(self, saliency: Tensor) -> Tensor:
+    def forward(self, saliency: Tensor, similarity: Tensor | None = None, mask: Tensor | None = None) -> Tensor:
         B, T = saliency.shape
         temp = self.log_temperature.exp().clamp(min=0.1, max=10.0)
 
@@ -56,23 +57,20 @@ class SoftSelectorProxy(nn.Module):
         logits = (saliency / (2.0 * self.lam) - 0.5) / temp
         y = torch.sigmoid(logits)
 
-        # Enforce y[:, 0] = 0 (first-step constraint)
-        y = y.clone()
-        y[:, 0] = 0.0
+        if mask is not None:
+            y = y * mask.to(dtype=y.dtype)
 
         # Soft budget: scale down if sum exceeds K
         budget = y.sum(dim=1, keepdim=True).clamp(min=1e-6)
         scale = torch.clamp(self.K / budget, max=1.0)
         y = y * scale
 
-        # Soft refractory: for each pair |t-u| ≤ r, dampen overlap
-        for d in range(1, min(self.r + 1, T)):
-            shift = torch.roll(y, shifts=-d, dims=1)
-            pair_sum = y + shift
-            damping = torch.clamp(2.0 / (1.0 + pair_sum), max=1.0)
-            y = y * damping
-
-        y[:, 0] = 0.0
+        if similarity is not None and self.r > 0:
+            for _ in range(self.r):
+                overlap = torch.bmm(similarity, y.unsqueeze(-1)).squeeze(-1)
+                y = y / (1.0 + overlap)
+                budget = y.sum(dim=1, keepdim=True).clamp(min=1e-6)
+                y = y * torch.clamp(self.K / budget, max=1.0)
         return y
 
 
@@ -123,7 +121,7 @@ class TopologicalEncoder(nn.Module):
         self.lam = lam
         self.max_proxy_points = max_proxy_points
 
-        anchor_dim = input_dim + 3  # [time, state, delta, saliency]
+        anchor_dim = structural_feature_dim(input_dim, include_selection=False)
 
         # Stage 1: Event detection + saliency
         self.event_model = CausalEventModel(input_dim, hidden_dim)
@@ -158,9 +156,14 @@ class TopologicalEncoder(nn.Module):
             dtype=saliency_scores.dtype,
         )
 
-    def _gpu_selector(self, saliency_scores: Tensor) -> Tensor:
+    def _gpu_selector(
+        self,
+        saliency_scores: Tensor,
+        similarity: Tensor | None = None,
+        mask: Tensor | None = None,
+    ) -> Tensor:
         """Differentiable GPU proxy for anchor selection."""
-        return self.selector_proxy(saliency_scores)
+        return self.selector_proxy(saliency_scores, similarity=similarity, mask=mask)
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
         """Encode raw sequence into topological anchor tokens.
@@ -180,12 +183,22 @@ class TopologicalEncoder(nn.Module):
         # Stage 1: Event detection + saliency
         event_scores, saliency_scores = self.event_model(x)
 
-        # Stage 2: Anchor selection (GPU proxy — differentiable, no CPU sync)
-        y_star = self._gpu_selector(saliency_scores)
+        structural_features = build_structural_feature_tensor(
+            x,
+            selection_weights=saliency_scores,
+            knn_k=max(1, self.r),
+        )
+        similarity = build_feature_similarity(structural_features)
 
-        # Stage 3: Topology-projected lift
-        dense_vectors = dense_anchor_vectors(x, saliency_scores)
-        dense_vectors = topology_project_torch(dense_vectors)
+        # Stage 2: Anchor selection (GPU proxy — differentiable, no CPU sync)
+        y_star = self._gpu_selector(saliency_scores, similarity=similarity)
+
+        # Stage 3: Structure-aware lift
+        dense_vectors = build_structural_feature_tensor(
+            x,
+            knn_k=max(1, self.r),
+            include_selection=False,
+        )
         _, dense_lifted_cloud = self.lift(dense_vectors)  # [B, T, k]
 
         # Stage 4: Select top-K anchors
