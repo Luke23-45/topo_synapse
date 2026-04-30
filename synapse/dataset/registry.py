@@ -77,6 +77,9 @@ def create_adapter(name: str, **kwargs: Any) -> Z3Adapter:
         Canonical dataset name.
     **kwargs
         Keyword arguments forwarded to the adapter constructor.
+        Unknown kwargs (not in the adapter's ``__init__``) are silently
+        dropped so that a shared config builder can pass a superset of
+        parameters without causing ``TypeError``.
 
     Returns
     -------
@@ -93,7 +96,18 @@ def create_adapter(name: str, **kwargs: Any) -> Z3Adapter:
             f"Unknown dataset: '{name}'. "
             f"Available: {sorted(_ADAPTERS.keys())}"
         )
-    return _ADAPTERS[name](**kwargs)
+    cls = _ADAPTERS[name]
+    import inspect
+    sig = inspect.signature(cls.__init__)
+    valid = {
+        p.name for p in sig.parameters.values()
+        if p.name != "self" and p.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+    }
+    filtered = {k: v for k, v in kwargs.items() if k in valid}
+    return cls(**filtered)
 
 
 def list_available_datasets() -> dict[str, DatasetSpec]:

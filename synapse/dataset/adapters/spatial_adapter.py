@@ -192,9 +192,13 @@ class SpatialAdapter(Z3Adapter):
         not as individual files.  To avoid downloading the full ~38 GB,
         we first fetch ``split.csv`` (tiny), determine how many chunks
         are needed to cover *max_samples*, and only download those.
+
+        Note: ``snapshot_download`` with ``allow_patterns`` does not
+        respect the filter on XetHub-backed repos, so we use individual
+        ``hf_hub_download`` calls instead.
         """
         try:
-            from huggingface_hub import hf_hub_download, snapshot_download
+            from huggingface_hub import hf_hub_download
         except ImportError as exc:
             raise ImportError(
                 "The 'huggingface_hub' package is required to load SpatialLM. "
@@ -212,7 +216,7 @@ class SpatialAdapter(Z3Adapter):
 
         # Phase 2: determine how many ZIP chunks we actually need
         needed_chunks = self._compute_needed_chunks(split_csv_path)
-        chunk_patterns = [f"pcd/chunk_{i:03d}.zip" for i in range(needed_chunks)]
+        chunk_files = [f"pcd/chunk_{i:03d}.zip" for i in range(needed_chunks)]
 
         log.info(
             "Downloading %d PCD ZIP chunks (~%.0f GB) from %s",
@@ -221,12 +225,12 @@ class SpatialAdapter(Z3Adapter):
             repo_id,
         )
 
-        # Phase 3: download only the required chunks
-        snapshot_download(
-            repo_id=repo_id,
-            repo_type="dataset",
-            allow_patterns=chunk_patterns,
-        )
+        # Phase 3: download each chunk individually (allow_patterns doesn't work on XetHub)
+        for chunk_file in chunk_files:
+            log.info("  Downloading %s ...", chunk_file)
+            hf_hub_download(
+                repo_id=repo_id, repo_type="dataset", filename=chunk_file,
+            )
 
         # Extract ZIP archives if PLY files aren't already on disk
         self._ensure_pcd_extracted(repo_root)

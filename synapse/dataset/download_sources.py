@@ -227,6 +227,11 @@ def download_dataset(name: str, data_root: str | Path | None = None) -> bool:
 
     repo = HF_REPOS[name]
     log.info("Downloading '%s' from %s ...", name, repo)
+
+    # --- Photonic uses JLD2 files (HDF5) — not load_dataset compatible ---
+    if name == "photonic":
+        return _download_photonic(name, repo, dataset_dir)
+
     try:
         ds = load_dataset(repo, trust_remote_code=True)
     except Exception as exc:
@@ -264,6 +269,50 @@ def download_dataset(name: str, data_root: str | Path | None = None) -> bool:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def _download_photonic(name: str, repo: str, dataset_dir: Path) -> bool:
+    """Download photonic JLD2 files via huggingface_hub (not load_dataset)."""
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        log.error(
+            "The 'huggingface_hub' package is required for photonic. "
+            "Install with: pip install huggingface_hub"
+        )
+        return False
+
+    raw_dir = dataset_dir / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        local_dir = snapshot_download(
+            repo,
+            repo_type="dataset",
+            allow_patterns=["lattices/*"],
+            local_dir=str(raw_dir),
+        )
+        log.info("  Downloaded photonic lattices to %s", local_dir)
+    except Exception as exc:
+        log.error("  Failed to download photonic: %s", exc)
+        write_manifest(
+            dataset_dir,
+            _make_manifest(name, "failed", hf_repo=repo, extra={"error": str(exc)}),
+        )
+        return False
+
+    jld2_count = len(list(Path(raw_dir).rglob("*.jld2")))
+    write_manifest(
+        dataset_dir,
+        _make_manifest(
+            name,
+            "complete",
+            hf_repo=repo,
+            extra={"num_jld2_files": jld2_count, "raw_path": str(raw_dir)},
+        ),
+    )
+    log.info("  '%s' downloaded (%d JLD2 files).", name, jld2_count)
+    return True
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(
