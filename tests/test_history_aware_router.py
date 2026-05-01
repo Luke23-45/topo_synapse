@@ -105,7 +105,7 @@ def test_candidate_encoder_projection_buffer_matches_concat_path() -> None:
         context,
         context_expanded=context_expanded,
     )
-    router.candidate_encoder.update_projection_buffer(
+    projection_buffer = router.candidate_encoder.update_projection_buffer(
         projection_buffer,
         selection_weights=selection,
         static_feature_dim=static_features.shape[-1],
@@ -143,3 +143,21 @@ def test_history_aware_router_matches_naive_reference() -> None:
     torch.testing.assert_close(all_z, ref_z)
     torch.testing.assert_close(all_memory, ref_memory)
     torch.testing.assert_close(all_anchors, ref_anchors)
+
+
+def test_history_aware_router_backward_does_not_hit_inplace_autograd_error() -> None:
+    torch.manual_seed(4)
+    router = HistoryAwareAnchorRouter(input_dim=5, d_u=16, d_a=8, d_m=16, K=4, r=1, L=4)
+
+    x = torch.randn(2, 7, 5, requires_grad=True)
+    mask = torch.tensor(
+        [[1, 1, 1, 1, 1, 1, 0], [1, 1, 1, 1, 0, 0, 0]],
+        dtype=torch.float32,
+    )
+
+    all_y, all_z, all_memory, all_anchors, _ = router(x, mask=mask)
+    loss = all_y.sum() + all_z.sum() + all_memory.sum() + all_anchors.sum()
+    loss.backward()
+
+    assert x.grad is not None
+    assert torch.isfinite(x.grad).all()

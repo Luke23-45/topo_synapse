@@ -87,6 +87,7 @@ class CandidateEncoder(nn.Module):
         *,
         static_feature_dim: int,
     ) -> Tensor:
+        projection_buffer = projection_buffer.clone()
         if selection_weights is None:
             projection_buffer[..., static_feature_dim] = 0.0
         else:
@@ -220,6 +221,7 @@ class AnchorScorer(nn.Module):
         similarity: Tensor,
         memory: Tensor,
         prev_selected: Optional[Tensor] = None,
+        structure_bias: Optional[Tensor] = None,
     ) -> tuple[Tensor, Tensor]:
         """Compute anchor scores and value vectors.
 
@@ -254,8 +256,10 @@ class AnchorScorer(nn.Module):
         scale = math.sqrt(self.d_a)
         scores = torch.bmm(k, q.unsqueeze(-1)).squeeze(-1) / scale  # [B, T]
 
-        descriptors = structural_features[..., -4:-1]
-        scores = scores + self.structure_bias(descriptors).squeeze(-1)
+        if structure_bias is None:
+            descriptors = structural_features[..., -4:-1]
+            structure_bias = self.structure_bias(descriptors).squeeze(-1)
+        scores = scores + structure_bias
 
         # Coverage bias from feature-space overlap with previously selected anchors.
         if prev_selected is not None and self.coverage_gamma > 0:
@@ -552,6 +556,7 @@ class HistoryAwareAnchorRouter(nn.Module):
             geometry_cache=geometry_cache,
         )
         similarity = build_feature_similarity(static_features, mask=mask)
+        structure_bias = self.scorer.structure_bias(static_features[..., -3:]).squeeze(-1)
 
         # Initialize memory from global structure context.
         memory = self.memory_init(context).to(dtype=x.dtype)
@@ -597,6 +602,7 @@ class HistoryAwareAnchorRouter(nn.Module):
                 stage_similarity,
                 memory,
                 prev_selected=cumulative_y,
+                structure_bias=structure_bias,
             )
 
             # Stage 3: Differentiable selection

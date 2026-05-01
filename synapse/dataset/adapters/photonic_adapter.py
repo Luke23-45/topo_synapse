@@ -27,6 +27,7 @@ from tqdm.auto import tqdm
 
 from ..preprocess.scientific import ScientificPreprocessor
 from ..registry import register_adapter
+from ...arch.data.normalization import compute_normalization_stats
 from .base import DatasetBundle, DatasetSpec, Z3Adapter
 from .persistence import get_prepared_cache_dir, load_prepared_bundle, save_prepared_bundle
 from .split_utils import apply_split, extract_predefined_splits, try_load_from_local
@@ -159,6 +160,9 @@ class PhotonicAdapter(Z3Adapter):
             spec=self._spec,
         )
         bundle = preprocessor(bundle)
+        norm = compute_normalization_stats(bundle.train_sequences)
+        bundle.metadata["normalization_mu"] = norm["mu"]
+        bundle.metadata["normalization_sigma"] = norm["sigma"]
 
         # 5. Save the FINAL PREPARED data to disk for next time
         save_prepared_bundle(cache_path, bundle)

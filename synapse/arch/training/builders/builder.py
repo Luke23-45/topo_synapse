@@ -65,7 +65,18 @@ def resolve_normalization(bundle: DatasetBundle) -> dict[str, np.ndarray]:
     """Compute structure-aware lift normalization stats from train data."""
     from synapse.arch.data.normalization import compute_normalization_stats
 
-    return compute_normalization_stats(bundle.train_sequences)
+    cached_mu = bundle.metadata.get("normalization_mu")
+    cached_sigma = bundle.metadata.get("normalization_sigma")
+    if cached_mu is not None and cached_sigma is not None:
+        return {
+            "mu": np.asarray(cached_mu, dtype=np.float64),
+            "sigma": np.asarray(cached_sigma, dtype=np.float64),
+        }
+
+    stats = compute_normalization_stats(bundle.train_sequences)
+    bundle.metadata["normalization_mu"] = stats["mu"]
+    bundle.metadata["normalization_sigma"] = stats["sigma"]
+    return stats
 
 
 def build_unified_model_from_cfg(

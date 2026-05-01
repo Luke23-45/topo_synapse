@@ -131,7 +131,7 @@ def train_backbone(
         warmup_steps=config.training.warmup_steps,
         gradient_clip_norm=config.training.gradient_clip_norm,
         fused_adamw=config.training.fused_adamw,
-        compile_model=config.training.compile_model,
+        compile_model=False,
     )
 
     # ------------------------------------------------------------------
@@ -179,6 +179,13 @@ def train_backbone(
             precision = "bf16-mixed"
         else:
             precision = "16-mixed"
+
+    if config.training.compile_model and hasattr(torch, "compile"):
+        try:
+            log.info("Compiling model before Trainer setup")
+            lightning_model.model = torch.compile(lightning_model.model, mode="reduce-overhead")
+        except Exception:
+            log.exception("torch.compile failed during training setup; continuing eagerly")
 
     # Clean tqdm progress bar — metrics only at epoch transitions
     callbacks.append(EpochOnlyProgressBar())

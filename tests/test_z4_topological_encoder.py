@@ -84,3 +84,33 @@ def test_z4_encoder_respects_masked_positions() -> None:
     assert all_memory.shape == (2, 4, 10)
     torch.testing.assert_close(all_y * (1.0 - mask.unsqueeze(1)), torch.zeros_like(all_y))
     torch.testing.assert_close(y_star * (1.0 - mask), torch.zeros_like(y_star))
+
+
+def test_z4_encoder_backward_does_not_hit_inplace_autograd_error() -> None:
+    torch.manual_seed(5)
+    encoder = Z4TopologicalEncoder(
+        input_dim=4,
+        d_model=12,
+        hidden_dim=16,
+        d_u=12,
+        d_a=8,
+        d_m=12,
+        k=5,
+        K=3,
+        r=1,
+        L=4,
+    )
+    encoder.set_normalization(torch.zeros(15), torch.ones(15))
+
+    x = torch.randn(2, 6, 4, requires_grad=True)
+    mask = torch.tensor(
+        [[1, 1, 1, 1, 1, 0], [1, 1, 1, 1, 0, 0]],
+        dtype=torch.float32,
+    )
+
+    tokens, y_star, all_y, all_memory = encoder(x, mask=mask)
+    loss = tokens.sum() + y_star.sum() + all_y.sum() + all_memory.sum()
+    loss.backward()
+
+    assert x.grad is not None
+    assert torch.isfinite(x.grad).all()

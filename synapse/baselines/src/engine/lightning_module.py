@@ -101,8 +101,11 @@ class BaselineLightningModule(pl.LightningModule):
 
         # Optional torch.compile
         if compile_model and hasattr(torch, "compile"):
-            log.info("Applying torch.compile to baseline model")
-            model = torch.compile(model)
+            try:
+                log.info("Applying torch.compile(mode='reduce-overhead') to baseline model")
+                model = torch.compile(model, mode="reduce-overhead")
+            except Exception:
+                log.exception("torch.compile failed; continuing with eager model")
 
         self.model = model
         self.loss_config = loss_config or LossConfig()
