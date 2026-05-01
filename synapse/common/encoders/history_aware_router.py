@@ -60,10 +60,51 @@ class CandidateEncoder(nn.Module):
             nn.Linear(d_u, d_u),
         )
 
-    def project(self, structural_features: Tensor, context: Tensor, context_expanded: Optional[Tensor] = None) -> Tensor:
+    def build_projection_buffer(
+        self,
+        static_features: Tensor,
+        context: Tensor,
+        context_expanded: Optional[Tensor] = None,
+    ) -> Tensor:
+        if context_expanded is None:
+            context_expanded = context.unsqueeze(1).expand(-1, static_features.shape[1], -1)
+        feature_dim = static_features.shape[-1]
+        context_dim = context_expanded.shape[-1]
+        buffer = static_features.new_empty(
+            static_features.shape[0],
+            static_features.shape[1],
+            feature_dim + 1 + context_dim,
+        )
+        buffer[..., :feature_dim] = static_features
+        buffer[..., feature_dim] = 0.0
+        buffer[..., feature_dim + 1:] = context_expanded
+        return buffer
+
+    def update_projection_buffer(
+        self,
+        projection_buffer: Tensor,
+        selection_weights: Optional[Tensor] = None,
+        *,
+        static_feature_dim: int,
+    ) -> Tensor:
+        if selection_weights is None:
+            projection_buffer[..., static_feature_dim] = 0.0
+        else:
+            projection_buffer[..., static_feature_dim] = selection_weights.to(dtype=projection_buffer.dtype)
+        return projection_buffer
+
+    def project(
+        self,
+        structural_features: Tensor,
+        context: Tensor,
+        context_expanded: Optional[Tensor] = None,
+    ) -> Tensor:
         if context_expanded is None:
             context_expanded = context.unsqueeze(1).expand(-1, structural_features.shape[1], -1)
         return self.proj(torch.cat([structural_features, context_expanded], dim=-1))
+
+    def project_with_buffer(self, projection_buffer: Tensor) -> Tensor:
+        return self.proj(projection_buffer)
 
     def forward(
         self,
@@ -75,6 +116,7 @@ class CandidateEncoder(nn.Module):
         context_expanded: Optional[Tensor] = None,
         similarity: Optional[Tensor] = None,
         static_features: Optional[Tensor] = None,
+        projection_buffer: Optional[Tensor] = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """
         Parameters
@@ -91,19 +133,30 @@ class CandidateEncoder(nn.Module):
         structural_features : Tensor [B, T, d_f]
         similarity : Tensor [B, T, T]
         """
-        if static_features is not None:
-            structural_features = append_selection_weight(static_features, selection_weights)
-        else:
-            structural_features = build_structural_feature_tensor(
-                x,
-                selection_weights=selection_weights,
-                mask=mask,
-                knn_k=self.knn_k,
-                geometry_cache=geometry_cache,
-            )
         if context is None:
             context = build_router_context(x, mask=mask, geometry_cache=geometry_cache)
-        u = self.project(structural_features, context, context_expanded=context_expanded)
+        if projection_buffer is not None and static_features is not None:
+            projection_buffer = self.update_projection_buffer(
+                projection_buffer,
+                selection_weights=selection_weights,
+                static_feature_dim=static_features.shape[-1],
+            )
+            structural_features = projection_buffer[..., : static_features.shape[-1] + 1]
+            u = self.project_with_buffer(
+                projection_buffer
+            )
+        else:
+            if static_features is not None:
+                structural_features = append_selection_weight(static_features, selection_weights)
+            else:
+                structural_features = build_structural_feature_tensor(
+                    x,
+                    selection_weights=selection_weights,
+                    mask=mask,
+                    knn_k=self.knn_k,
+                    geometry_cache=geometry_cache,
+                )
+            u = self.project(structural_features, context, context_expanded=context_expanded)
         if similarity is None:
             if static_features is not None:
                 similarity = build_feature_similarity(static_features, mask=mask)
@@ -508,16 +561,22 @@ class HistoryAwareAnchorRouter(nn.Module):
 
         # Pre-expand context for candidate encoder (avoids L repeated unsqueeze+expand)
         context_expanded = context.unsqueeze(1).expand(-1, T, -1)  # [B, T, d_context]
+        projection_buffer = self.candidate_encoder.build_projection_buffer(
+            static_features,
+            context,
+            context_expanded=context_expanded,
+        )
 
         # Pre-allocate zero feedback tensor (avoids L allocations when feedback is None)
         if feedback is None:
             zero_feedback = torch.zeros(B, self.feedback_dim, device=device, dtype=x.dtype)
 
         # Storage for outputs
-        all_y = []
-        all_z = []
-        all_memory = [memory]
-        all_anchors = []
+        all_y = x.new_empty(B, self.L, T)
+        all_z = x.new_empty(B, self.L, self.d_u)
+        all_memory = x.new_empty(B, self.L + 1, self.d_m)
+        all_memory[:, 0] = memory
+        all_anchors = x.new_empty(B, self.L, T, self.d_u)
 
         for ell in range(self.L):
             # Stage 2: Anchor scoring
@@ -530,6 +589,7 @@ class HistoryAwareAnchorRouter(nn.Module):
                 context_expanded=context_expanded,
                 similarity=similarity,
                 static_features=static_features,
+                projection_buffer=projection_buffer,
             )
             scores, v = self.scorer(
                 stage_u,
@@ -558,16 +618,11 @@ class HistoryAwareAnchorRouter(nn.Module):
             cumulative_y = cumulative_y + y
 
             # Store outputs
-            all_y.append(y)
-            all_z.append(z)
-            all_memory.append(memory)
+            all_y[:, ell] = y
+            all_z[:, ell] = z
+            all_memory[:, ell + 1] = memory
             # Anchor tokens weighted by selection
             anchors = stage_u * y.unsqueeze(-1)  # [B, T, d_u]
-            all_anchors.append(anchors)
-
-        all_y = torch.stack(all_y, dim=1)  # [B, L, T]
-        all_z = torch.stack(all_z, dim=1)  # [B, L, d_u]
-        all_memory = torch.stack(all_memory, dim=1)  # [B, L+1, d_m]
-        all_anchors = torch.stack(all_anchors, dim=1)  # [B, L, T, d_u]
+            all_anchors[:, ell] = anchors
 
         return all_y, all_z, all_memory, all_anchors, geometry_cache
