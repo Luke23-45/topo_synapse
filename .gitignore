@@ -138,4 +138,7 @@ scratch/
 docs
 outputs
 logs
+data
 # dev
+logs.md
+dev/benchmark_deep_hodge_pipeline.py

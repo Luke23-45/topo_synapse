@@ -125,7 +125,18 @@ class DifferentiableHodgeProxy(nn.Module):
         self.register_buffer("B1", B1)
         self.register_buffer("B2", B2)
 
-        # Store edge/triangle index lists for efficient weight computation
+        # Patch B: Pre-register transposes as buffers (avoid repeated .t() calls)
+        self.register_buffer("_B1T", B1.t().contiguous())
+        self.register_buffer("_B2T", B2.t().contiguous())
+
+        # Patch C: Convert Python list indices to tensor buffers for GPU-accelerated indexing
+        self.register_buffer("_e_idx_i", torch.tensor([e[0] for e in edges], dtype=torch.long))
+        self.register_buffer("_e_idx_j", torch.tensor([e[1] for e in edges], dtype=torch.long))
+        self.register_buffer("_t_idx_ij", torch.tensor([edge_to_idx[(t[0], t[1])] for t in triangles], dtype=torch.long))
+        self.register_buffer("_t_idx_jk", torch.tensor([edge_to_idx[(t[1], t[2])] for t in triangles], dtype=torch.long))
+        self.register_buffer("_t_idx_ik", torch.tensor([edge_to_idx[(t[0], t[2])] for t in triangles], dtype=torch.long))
+
+        # Keep Python lists for backward compatibility (tests reference them)
         self.e_idx_i = [e[0] for e in edges]
         self.e_idx_j = [e[1] for e in edges]
         self.t_idx_ij = [edge_to_idx[(t[0], t[1])] for t in triangles]
@@ -193,47 +204,67 @@ class DifferentiableHodgeProxy(nn.Module):
         # W0: vertex weights = activations (§12: w_u^(0) = ỹ_u)
         W0 = act                                            # (B, K)
 
+        # ── Patch A: Vectorized scale loop ──
+        S = self.num_scales
+        K = self.max_points
+        E = self.B1.shape[1]
+        T = self.B2.shape[1]
+
+        # Compute all W1 and W2 for all scales at once
+        sigma_sq = scales.square()  # (S,)
+        D_sq = D.square().unsqueeze(1)  # (B, 1, K, K)
+        denom = (2.0 * sigma_sq.view(1, S, 1, 1) + 1e-8)  # (1, S, 1, 1)
+        A_all = torch.exp(-D_sq / denom) * mask_2d.unsqueeze(1)  # (B, S, K, K)
+
+        # Patch C: use tensor buffer indices for GPU-accelerated fancy indexing
+        W1_all = A_all[:, :, self._e_idx_i, self._e_idx_j]  # (B, S, E)
+        W2_all = W1_all[:, :, self._t_idx_ij] * W1_all[:, :, self._t_idx_jk] * W1_all[:, :, self._t_idx_ik]  # (B, S, T)
+
+        # ── L0 for all scales: (B1 * W1) @ B1^T + τI ──
+        B1_u = self.B1.unsqueeze(0)  # (1, K, E)
+        W1_flat = W1_all.reshape(B_batch * S, 1, E)  # (B*S, 1, E)
+        B1_scaled = B1_u * W1_flat  # (B*S, K, E) — broadcast
+        B1_exp = self.B1.unsqueeze(0).expand(B_batch * S, -1, -1)  # (B*S, K, E)
+        L0_all = torch.bmm(B1_scaled, B1_exp.transpose(1, 2))  # (B*S, K, K)
+        L0_all = L0_all + self.tau * self._eye_K.unsqueeze(0)
+        L0_all = L0_all.reshape(B_batch, S, K, K)  # (B, S, K, K)
+
+        # Batched eigvalsh over (B, S) — reshape to (B*S, K, K)
+        eigvals_L0 = torch.linalg.eigvalsh(L0_all.reshape(B_batch * S, K, K))  # (B*S, K)
+        eigvals_L0 = eigvals_L0.reshape(B_batch, S, K)  # (B, S, K)
+
+        # ── Patch E: Hoist scale-invariant term_down out of loop ──
+        # term_down = B1^T W0 B1 is the same for all scales (W0 doesn't depend on σ)
+        # Patch B: use pre-registered _B1T buffer
+        BT_scaled = self._B1T.unsqueeze(0) * W0.unsqueeze(1)  # (B, E, K)
+        B1_exp_b = self.B1.unsqueeze(0).expand(B_batch, -1, -1)  # (B, K, E)
+        term_down = torch.bmm(BT_scaled, B1_exp_b)  # (B, E, E)
+
+        # term_up = B2 W2 B2^T varies per scale — batch over scales
+        B2_u = self.B2.unsqueeze(0)  # (1, E, T)
+        W2_flat = W2_all.reshape(B_batch * S, 1, T)  # (B*S, 1, T)
+        B2_scaled = B2_u * W2_flat  # (B*S, E, T)
+        # Patch B: use pre-registered _B2T buffer
+        B2_exp = self._B2T.unsqueeze(0).expand(B_batch * S, -1, -1)  # (B*S, T, E)
+        term_up = torch.bmm(B2_scaled, B2_exp)  # (B*S, E, E)
+
+        # L1 = term_down + term_up + τI  (term_down is broadcast over S)
+        L1_all = term_down.unsqueeze(1).expand(-1, S, -1, -1).reshape(B_batch * S, E, E) + term_up
+        L1_all = L1_all + self.tau * self._eye_E.unsqueeze(0)
+        L1_all = L1_all.reshape(B_batch, S, E, E)  # (B, S, E, E)
+
+        # Batched eigvalsh over (B, S) — reshape to (B*S, E, E)
+        eigvals_L1 = torch.linalg.eigvalsh(L1_all.reshape(B_batch * S, E, E))  # (B*S, E)
+        eigvals_L1 = eigvals_L1.reshape(B_batch, S, E)  # (B, S, E)
+
+        # Collect eigenvalue features
         features = []
-        for s_idx in range(self.num_scales):
-            sigma = scales[s_idx]
-
-            # ── W1: edge weights (§12) ──
-            # w_{uv}^(1,s) = exp(-||p̃_u - p̃_v||² / 2σ_s²) · ỹ_u · ỹ_v
-            A = torch.exp(-D.square() / (2.0 * sigma.square() + 1e-8)) * mask_2d
-            W1 = A[:, self.e_idx_i, self.e_idx_j]          # (B, E)
-
-            # ── W2: triangle weights (§12) ──
-            # w_{uvw}^(2,s) = w_{uv} · w_{uw} · w_{vw}
-            W2 = W1[:, self.t_idx_ij] * W1[:, self.t_idx_jk] * W1[:, self.t_idx_ik]  # (B, T)
-
-            # ── Δ̂_0 = B1 · diag(W1) · B1^T + τI ──
-            # Element-wise scaling: (B1 * W1) @ B1.T avoids materializing the diagonal
-            B1_scaled = self.B1.unsqueeze(0) * W1.unsqueeze(1)  # (B, K, E)
-            B1_exp = self.B1.unsqueeze(0).expand(B_batch, -1, -1)  # (B, K, E)
-            L0 = torch.bmm(B1_scaled, B1_exp.transpose(1, 2))  # (B, K, K)
-            L0 = L0 + self.tau * self._eye_K.unsqueeze(0)
-            eigvals_L0 = torch.linalg.eigvalsh(L0)         # (B, K)
-
-            # ── Δ̂_1 = B1^T · diag(W0) · B1 + B2 · diag(W2) · B2^T + τI ──
-            # Element-wise scaling for both terms
-            BT_scaled = self.B1.t().unsqueeze(0) * W0.unsqueeze(1)  # (B, E, K)
-            B1_exp = self.B1.unsqueeze(0).expand(B_batch, -1, -1)  # (B, K, E)
-            term_down = torch.bmm(BT_scaled, B1_exp)  # (B, E, E)
-
-            B2_scaled = self.B2.unsqueeze(0) * W2.unsqueeze(1)  # (B, E, T)
-            B2_exp = self.B2.t().unsqueeze(0).expand(B_batch, -1, -1)  # (B, T, E)
-            term_up = torch.bmm(B2_scaled, B2_exp)  # (B, E, E)
-
-            L1 = term_down + term_up
-            L1 = L1 + self.tau * self._eye_E.unsqueeze(0)
-            eigvals_L1 = torch.linalg.eigvalsh(L1)         # (B, E)
-
-            # Retain first J eigenvalues from each, padding if needed
-            eig0 = eigvals_L0[:, :num_eigs]
+        for s_idx in range(S):
+            eig0 = eigvals_L0[:, s_idx, :num_eigs]
             if eig0.shape[1] < num_eigs:
                 eig0 = torch.nn.functional.pad(eig0, (0, num_eigs - eig0.shape[1]))
 
-            eig1 = eigvals_L1[:, :num_eigs]
+            eig1 = eigvals_L1[:, s_idx, :num_eigs]
             if eig1.shape[1] < num_eigs:
                 eig1 = torch.nn.functional.pad(eig1, (0, num_eigs - eig1.shape[1]))
 

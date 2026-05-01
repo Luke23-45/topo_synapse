@@ -60,8 +60,9 @@ class CandidateEncoder(nn.Module):
             nn.Linear(d_u, d_u),
         )
 
-    def project(self, structural_features: Tensor, context: Tensor) -> Tensor:
-        context_expanded = context.unsqueeze(1).expand(-1, structural_features.shape[1], -1)
+    def project(self, structural_features: Tensor, context: Tensor, context_expanded: Optional[Tensor] = None) -> Tensor:
+        if context_expanded is None:
+            context_expanded = context.unsqueeze(1).expand(-1, structural_features.shape[1], -1)
         return self.proj(torch.cat([structural_features, context_expanded], dim=-1))
 
     def forward(
@@ -71,6 +72,7 @@ class CandidateEncoder(nn.Module):
         mask: Optional[Tensor] = None,
         geometry_cache: Optional[dict[str, Tensor]] = None,
         context: Optional[Tensor] = None,
+        context_expanded: Optional[Tensor] = None,
         similarity: Optional[Tensor] = None,
         static_features: Optional[Tensor] = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
@@ -101,7 +103,7 @@ class CandidateEncoder(nn.Module):
             )
         if context is None:
             context = build_router_context(x, mask=mask, geometry_cache=geometry_cache)
-        u = self.project(structural_features, context)
+        u = self.project(structural_features, context, context_expanded=context_expanded)
         if similarity is None:
             if static_features is not None:
                 similarity = build_feature_similarity(static_features, mask=mask)
@@ -504,6 +506,13 @@ class HistoryAwareAnchorRouter(nn.Module):
         # Cumulative selection mask for coverage bias
         cumulative_y = torch.zeros(B, T, device=device, dtype=x.dtype)
 
+        # Pre-expand context for candidate encoder (avoids L repeated unsqueeze+expand)
+        context_expanded = context.unsqueeze(1).expand(-1, T, -1)  # [B, T, d_context]
+
+        # Pre-allocate zero feedback tensor (avoids L allocations when feedback is None)
+        if feedback is None:
+            zero_feedback = torch.zeros(B, self.feedback_dim, device=device, dtype=x.dtype)
+
         # Storage for outputs
         all_y = []
         all_z = []
@@ -518,6 +527,7 @@ class HistoryAwareAnchorRouter(nn.Module):
                 mask=mask,
                 geometry_cache=geometry_cache,
                 context=context,
+                context_expanded=context_expanded,
                 similarity=similarity,
                 static_features=static_features,
             )
@@ -539,10 +549,7 @@ class HistoryAwareAnchorRouter(nn.Module):
             c = self.statistics(y, stage_u)  # [B, 4]
 
             # Stage 6: Memory update
-            if feedback is not None:
-                r_ell = feedback  # [B, n_feedback] — same for all stages
-            else:
-                r_ell = torch.zeros(B, self.feedback_dim, device=device, dtype=x.dtype)
+            r_ell = feedback if feedback is not None else zero_feedback
 
             gru_input = torch.cat([z, c, r_ell], dim=-1)  # [B, d_u + 4 + n_feedback]
             memory = self.gru(gru_input, memory)  # [B, d_m]
